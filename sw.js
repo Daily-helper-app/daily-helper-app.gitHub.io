@@ -22,6 +22,35 @@ self.addEventListener("fetch", event => {
   event.respondWith(networkFirst(req));
 });
 
+// Phone notifications (sent by supabase/functions/notify when a plan is suggested or answered)
+self.addEventListener("push", event => {
+  let d = {};
+  try { d = event.data ? event.data.json() : {}; } catch (_) {}
+  const jobs = [self.registration.showNotification(d.title || "Daily", {
+    body: d.body || "",
+    icon: "icons/icon-192.png",
+    tag: d.tag,                     // a newer message about the same plan replaces the older one
+    data: { url: d.url || "./" },
+  })];
+  if (typeof d.count === "number" && self.navigator.setAppBadge) {
+    jobs.push((d.count ? self.navigator.setAppBadge(d.count) : self.navigator.clearAppBadge()).catch(() => {}));
+  }
+  event.waitUntil(Promise.all(jobs));
+});
+
+// Tapping a notification opens the app on the Us tab
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || "./";
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(list => {
+    if (list.length) {
+      list[0].postMessage({ open: "us" });
+      return list[0].focus();
+    }
+    return self.clients.openWindow(url);
+  }));
+});
+
 async function networkFirst(req) {
   const cache = await caches.open(CACHE);
   const network = fetch(req).then(res => {

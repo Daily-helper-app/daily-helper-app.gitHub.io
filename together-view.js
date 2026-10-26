@@ -9,6 +9,8 @@ const UsView = (() => {
   let invite = null;       // { code } after making an invite
   let draft = null;        // what was typed in the open plan form, kept when the screen redraws (e.g. after an error)
   let busy = false;
+  const expanded = new Set();   // plans opened to show their details and history
+  let pastOpen = false;
   let pending = false;     // live data arrived while a form was open: redraw once it closes
 
   // Small helper: el("div", { className: "x", onclick: f }, child, "text")
@@ -41,10 +43,17 @@ const UsView = (() => {
   const whenText = p => [dayLabel(p.day), (PART_LABELS[p.part] || "").toLowerCase(), timeLabel(p.exact_time)]
     .filter(Boolean).join(" · ");
 
-  const lastNote = id => {
-    const withNote = Together.events(id).filter(e => e.note);
-    return withNote.length ? withNote[withNote.length - 1] : null;
-  };
+  // Notes are the short messages sent with an answer (e.g. "Sunday instead?" or a reason to decline)
+  const notesOf = id => Together.events(id).filter(e => e.note);
+  const who = id => id === Together.myId() ? "You" : Together.nameOf(id);
+
+  // The newest note, shown on the plan card itself so it can always be seen
+  function noteLine(p) {
+    const notes = notesOf(p.id);
+    if (!notes.length) return null;
+    const n = notes[notes.length - 1];
+    return el("div", { className: "plan-note" }, "“" + n.note + "”", el("span", { className: "by" }, " — " + who(n.actor)));
+  }
 
   // Runs an action, shows its message (empty = fine), and redraws
   async function act(fn) {
@@ -86,19 +95,68 @@ const UsView = (() => {
       return b;
     });
     const time = el("input", { type: "time", "aria-label": "Time (optional)", value: d.time || "" });
-    const note = el("input", { type: "text", maxlength: 200, placeholder: "Note (optional)", "aria-label": "Note", value: d.note || "" });
+    // A new plan has a details box instead; a note goes with an answer ("Sunday instead?")
+    const note = withTitle ? null
+      : el("input", { type: "text", maxlength: 200, placeholder: "Note (optional), e.g. Sunday instead?", "aria-label": "Note", value: d.note || "" });
+    const details = withTitle
+      ? el("textarea", { maxlength: 1000, rows: 3, placeholder: "Details (optional): where, what to bring, links…", "aria-label": "Details" })
+      : null;
+    if (details) details.value = d.details || "";
     const node = el("div", { className: "plan-fields" },
       title, day, el("div", { className: "move" }, partBtns),
-      el("label", { className: "muted small" }, "Time (optional) ", time), note);
-    return { node, get: () => ({ title: title && title.value, day: day.value, part, time: time.value, note: note.value }) };
+      el("label", { className: "muted small" }, "Time (optional) ", time), note, details);
+    return { node, get: () => ({ title: title && title.value, day: day.value, part, time: time.value, note: note ? note.value : undefined,
+      details: details ? details.value : undefined }) };
+  }
+
+  // The plan's name; tapping it opens or closes its details and history
+  function planHead(p) {
+    const open = expanded.has(p.id);
+    return el("button", { type: "button", className: "plan-head", "aria-expanded": open ? "true" : "false",
+      onclick: () => { open ? expanded.delete(p.id) : expanded.add(p.id); draw(true); } },
+      el("span", { className: "plan-title" }, p.title),
+      el("span", { className: "plan-more-hint" }, open ? "Close" : (p.details ? "Details" : "More")));
+  }
+
+  // Shown when a plan is opened: its details (anyone can change them) and its history
+  function planMore(p) {
+    if (!expanded.has(p.id)) return null;
+    const box = el("div", { className: "plan-more" });
+    if (openForm === "details:" + p.id) {
+      const area = el("textarea", { maxlength: 1000, rows: 4, "aria-label": "Details" });
+      area.value = draft && draft.details !== undefined ? draft.details : (p.details || "");
+      box.append(area, el("div", { className: "btn-row" },
+        el("button", { type: "button", className: "btn primary", onclick: () => act(async () => {
+          draft = { details: area.value };
+          const err = await Together.setDetails(p.id, area.value);
+          if (!err) { openForm = null; draft = null; }
+          return err;
+        }) }, "Save details"),
+        el("button", { type: "button", className: "btn", onclick: closeForm }, "Cancel")));
+    } else {
+      box.append(
+        p.details ? el("p", { className: "plan-details" }, p.details) : el("p", { className: "muted small" }, "No details yet."),
+        el("button", { type: "button", className: "text-btn left", onclick: () => { openForm = "details:" + p.id; draft = null; draw(true); } },
+          p.details ? "Edit details" : "Add details"));
+    }
+    // Every note on this plan, oldest first
+    const notes = notesOf(p.id);
+    if (notes.length) {
+      box.append(el("div", { className: "muted small history-head" }, "Notes"),
+        el("ul", { className: "notes" }, notes.map(n => el("li", {},
+          el("span", { className: "by" }, who(n.actor) + ": "), n.note))));
+    }
+    const list = historyList(p);
+    if (list) box.append(el("div", { className: "muted small history-head" }, "History"), list);
+    return box;
   }
 
   function waitingCard(p) {
-    const n = lastNote(p.id);
     const card = el("div", { className: "plan-card" },
-      el("div", { className: "plan-title" }, p.title),
+      planHead(p),
       el("div", { className: "muted" }, whenText(p)),
-      el("div", { className: "muted small" }, "From " + Together.nameOf(p.last_by) + (n ? ' · "' + n.note + '"' : "")));
+      el("div", { className: "muted small" }, "From " + Together.nameOf(p.last_by)),
+      noteLine(p));
     if (openForm === p.id) {
       const f = planFields(false, p.day);
       card.append(f.node, el("div", { className: "btn-row" },
@@ -119,35 +177,43 @@ const UsView = (() => {
           return Together.answerPlan(p.id, "declined", { note });
         }) }, "Decline")));
     }
-    card.append(history(p));
+    card.append(planMore(p));
     return card;
   }
 
   function sentCard(p) {
     const partner = Together.partner();
     return el("div", { className: "plan-card quiet" },
-      el("div", { className: "plan-title" }, p.title),
+      planHead(p),
       el("div", { className: "muted" }, whenText(p)),
       el("div", { className: "muted small" }, "Waiting for " + (partner ? partner.name || "them" : "them")),
-      el("button", { type: "button", className: "text-btn", onclick: () => act(() => {
+      noteLine(p),
+      el("button", { type: "button", className: "text-btn left", onclick: () => act(() => {
         if (!confirm("Take this suggestion back?")) return "";
         return Together.answerPlan(p.id, "declined", { note: "taken back" });
       }) }, "Take back"),
-      history(p));
+      planMore(p));
   }
 
-  function history(p) {
+  // Approved and past plans: name, when, and (opened) details + history
+  function plainCard(p, extra) {
+    return el("div", { className: "plan-card quiet" },
+      planHead(p),
+      el("div", { className: "muted small" }, whenText(p) + (extra ? " · " + extra : "")),
+      noteLine(p),
+      planMore(p));
+  }
+
+  function historyList(p) {
     const evs = Together.events(p.id);
     if (!evs.length) return null;
     const words = { suggested: "suggested", countered: "suggested another time", approved: "approved",
-      declined: "declined", expired: "expired (no answer)" };
-    return el("details", { className: "history" },
-      el("summary", {}, "History"),
-      el("ul", {}, evs.map(e => el("li", {},
-        (e.actor ? (e.actor === Together.myId() ? "You" : Together.nameOf(e.actor)) + " " : "") + words[e.action] +
-        (e.action === "suggested" || e.action === "countered" ? " " + whenText(e) : "") +
-        (e.note ? ' · "' + e.note + '"' : "") +
-        " · " + new Date(e.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })))));
+      declined: "declined", expired: "expired (no answer)", details: "changed the details" };
+    return el("ul", { className: "history" }, evs.map(e => el("li", {},
+      (e.actor ? (e.actor === Together.myId() ? "You" : Together.nameOf(e.actor)) + " " : "") + words[e.action] +
+      (e.action === "suggested" || e.action === "countered" ? " " + whenText(e) : "") +
+      (e.note ? ' · "' + e.note + '"' : "") +
+      " · " + new Date(e.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))));
   }
 
   function taskRowShared(t) {
@@ -209,11 +275,35 @@ const UsView = (() => {
       }) }, invite ? "Make a new code" : "Make a code"));
   }
 
+  // Shown until notifications are on for this phone
+  function pushCard() {
+    const state = Together.pushState();
+    if (state === "granted") return null;
+    const installed = window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
+    if (state === "unsupported" || !installed) {
+      return el("div", { className: "card" },
+        el("h2", {}, "Get notified about plans"),
+        el("p", { className: "muted" }, "Open Daily from your Home Screen (Share → Add to Home Screen in Safari) to turn on notifications."));
+    }
+    if (state === "denied") {
+      return el("div", { className: "card" },
+        el("h2", {}, "Notifications are off"),
+        el("p", { className: "muted" }, "Turn them on in iPhone Settings → Notifications → Daily."));
+    }
+    return el("div", { className: "card" },
+      el("h2", {}, "Get notified about plans"),
+      el("p", { className: "muted" }, "Your phone shows a notification when a plan is suggested or answered."),
+      el("button", { type: "button", className: "btn primary", onclick: () => act(() => Together.enablePush(true)) },
+        "Turn on notifications"));
+  }
+
   function mainScreen(root) {
     const L = Together.lists();
     const partner = Together.partner();
 
     if (!partner) root.append(inviteCard());
+    const push = pushCard();
+    if (push) root.append(push);
 
     if (L.waiting.length) {
       root.append(el("h3", { className: "us-head" }, "Waiting for you · " + L.waiting.length), ...L.waiting.map(waitingCard));
@@ -247,9 +337,7 @@ const UsView = (() => {
     }
     if (L.sent.length) root.append(el("h3", { className: "us-head" }, "Sent"), ...L.sent.map(sentCard));
     if (L.upcoming.length) {
-      root.append(el("h3", { className: "us-head" }, "Coming up"),
-        el("ul", { className: "list" }, L.upcoming.map(p => el("li", { className: "item plan-row" },
-          el("span", { className: "text" }, p.title, el("span", { className: "by" }, " · " + whenText(p)))))));
+      root.append(el("h3", { className: "us-head" }, "Coming up"), ...L.upcoming.map(p => plainCard(p)));
     }
 
     // Shared list
@@ -265,12 +353,11 @@ const UsView = (() => {
     else root.append(el("p", { className: "muted" }, "Nothing shared yet. Anything added here shows on both phones."));
 
     if (L.past.length) {
-      root.append(el("details", { className: "card past" },
+      const past = el("details", { className: "card past", open: pastOpen },
         el("summary", {}, "Past plans · " + L.past.length),
-        L.past.map(p => el("div", { className: "plan-card quiet" },
-          el("div", { className: "plan-title" }, p.title),
-          el("div", { className: "muted small" }, whenText(p) + " · " + p.status),
-          history(p)))));
+        L.past.map(p => plainCard(p, p.status)));
+      past.addEventListener("toggle", () => { pastOpen = past.open; });
+      root.append(past);
     }
   }
 
@@ -282,7 +369,7 @@ const UsView = (() => {
     const root = $("us-root");
     if (!root) return;
     const active = document.activeElement;
-    const typing = active && root.contains(active) && active.matches("input") && active.id !== "us-add";
+    const typing = active && root.contains(active) && active.matches("input, textarea") && active.id !== "us-add";
     if (!force && (typing || openForm)) { pending = true; drawBadge(); return; }
     pending = false;
     // The shared list's add box survives redraws, so several tasks can be added in a row
@@ -312,6 +399,8 @@ const UsView = (() => {
     const badge = $("us-count");
     badge.textContent = n;
     badge.hidden = n === 0;
+    // The number on the app icon (shows only when notifications are allowed)
+    if (navigator.setAppBadge && Together.signedIn()) (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
   }
 
   function init() {
@@ -321,6 +410,11 @@ const UsView = (() => {
     root.addEventListener("focusout", () => setTimeout(() => {
       if (pending && !root.contains(document.activeElement)) draw();
     }, 300));
+    // Opened from a notification: go straight to Us
+    if (new URLSearchParams(location.search).get("view") === "us") showView("us");
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.addEventListener("message", e => { if (e.data && e.data.open === "us") showView("us"); });
+    }
     draw(true);
   }
 

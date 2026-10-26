@@ -7,7 +7,7 @@
 const Together = (() => {
   const CACHE_KEY = "dailyapp.together";   // last shared data seen, so it still shows offline
   const OUTBOX_KEY = "dailyapp.outbox";    // plans suggested while offline, sent when back online
-  const ITEM_COLUMNS = "id,owner_id,group_id,kind,title,day,part,exact_time,done,done_by,status,version,last_by,created_at,updated_at";
+  const ITEM_COLUMNS = "id,owner_id,group_id,kind,title,day,part,exact_time,done,done_by,status,version,last_by,details,created_at,updated_at";
 
   let client = null;
   let user = null;
@@ -196,12 +196,13 @@ const Together = (() => {
   // ---------- Plans ----------
 
   // A plan suggested offline waits in the outbox with its own id, so sending it twice still adds it once.
-  async function suggestPlan({ title, day, part, time, note }) {
+  async function suggestPlan({ title, day, part, time, note, details }) {
     title = (title || "").trim().slice(0, 200);
     if (!title) return "Name the plan first.";
     if (!day || !part) return "Pick a day and a part of the day.";
     const plan = { p_group: data.group.id, p_title: title, p_day: day, p_part: part, p_time: time || null,
-      p_note: (note || "").trim().slice(0, 200) || null, p_id: makeId() };
+      p_note: (note || "").trim().slice(0, 200) || null, p_id: makeId(),
+      p_details: (details || "").trim().slice(0, 1000) || null };
     if (!navigator.onLine) {
       setOutbox([...outbox(), plan]);
       emit();
@@ -246,6 +247,13 @@ const Together = (() => {
     return error ? explain(error) : "";
   }
 
+  // Either person can change a plan's details; the change is kept in its history
+  async function setDetails(id, details) {
+    const { error } = await client.rpc("set_plan_details", { p_item: id, p_details: (details || "").slice(0, 1000) });
+    await load();
+    return error ? explain(error) : "";
+  }
+
   // ---------- Lists for the screen ----------
 
   const today = () => dayKey();
@@ -265,6 +273,42 @@ const Together = (() => {
 
   const waitingCount = () => lists().waiting.length;
 
+  // ---------- Phone notifications ----------
+  // iPhone: only in the app opened from the Home Screen (iOS 16.4+), and the request must come from a tap.
+
+  const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const pushState = () => !pushSupported() ? "unsupported" : Notification.permission;   // default / granted / denied
+
+  function keyBytes(b64) {
+    const s = atob((b64 + "=".repeat((4 - b64.length % 4) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from(s, c => c.charCodeAt(0));
+  }
+
+  // Signs this phone up (or refreshes its sign-up) and saves it to the account
+  async function enablePush(askFirst = true) {
+    if (!pushSupported()) return "This browser can't show notifications. On iPhone, open Daily from the Home Screen.";
+    if (askFirst && Notification.permission !== "granted") {
+      const answer = await Notification.requestPermission();
+      if (answer !== "granted") return "Notifications are off. Turn them on in iPhone Settings → Notifications → Daily.";
+    }
+    if (Notification.permission !== "granted") return "";
+    try {
+      const { data: publicKey, error } = await client.rpc("vapid_public_key");
+      if (error || !publicKey) return "Notifications aren't set up on the server yet.";
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(publicKey) });
+      const j = sub.toJSON();
+      const { error: e2 } = await client.from("push_subscriptions")
+        .upsert({ endpoint: j.endpoint, user_id: user.id, p256dh: j.keys.p256dh, auth: j.keys.auth });
+      if (e2) return explain(e2);
+      emit();
+      return "";
+    } catch (e) {
+      return "Couldn't turn on notifications (" + (e && e.message) + ").";
+    }
+  }
+
   // ---------- Start ----------
 
   function init() {
@@ -276,6 +320,7 @@ const Together = (() => {
       data = u ? loadCache(u.id) : emptyData();
       emit();
       if (u) load();
+      if (u && pushState() === "granted") enablePush(false);   // keep this phone's sign-up fresh
     });
     document.addEventListener("visibilitychange", () => { if (!document.hidden && user) reloadSoon(0); });
     window.addEventListener("online", () => { if (user) load(); });
@@ -288,7 +333,8 @@ const Together = (() => {
     events: id => data.events[id] || [],
     setName, createGroup, makeInvite, joinGroup,
     addTask, toggleTask, renameTask, deleteTask,
-    suggestPlan, answerPlan, lists, waitingCount,
+    suggestPlan, answerPlan, setDetails, lists, waitingCount,
+    pushState, enablePush,
   };
 })();
 
