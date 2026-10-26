@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Safety: only this app's own files may load or run; the only other site it may talk to is its own account server -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://jgljhwydqghnmutywkzp.supabase.co wss://jgljhwydqghnmutywkzp.supabase.co; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Daily</title>
+<meta name="theme-color" content="#f4f4f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f0f12" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Daily">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="app.css">
+<script src="vendor/supabase-2.117.3.js" defer></script>
+<script src="config.js" defer></script>
+<script src="app.js" defer></script>
+<script src="sync.js" defer></script>
+<script src="together.js" defer></script>
+<script src="together-view.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <h1 id="title">To-do</h1>
+  <p id="subtitle" class="sub"></p>
+</header>
+
+<div id="banner" class="banner" role="alert" hidden></div>
+
+<main>
+  <!-- To-do tab -->
+  <section id="view-todo" class="view">
+    <div id="install-tip" class="tip" hidden>
+      <p><b>Install it first:</b> tap Share
+        <svg class="inline-icon" viewBox="0 0 24 24" aria-label="Share icon"><path d="M12 3v12M7 8l5-5 5 5M5 12v8h14v-8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        then <b>Add to Home Screen</b>. Tasks added here in Safari don't move into the installed app.</p>
+      <button id="install-tip-close" class="icon-btn" type="button" aria-label="Hide tip">×</button>
+    </div>
+
+    <form id="add-form" class="add" autocomplete="off">
+      <input id="add-input" type="text" placeholder="Add a task" maxlength="200" enterkeyhint="done" aria-label="New task">
+      <button type="submit" class="add-btn" aria-label="Add task">+</button>
+    </form>
+
+    <p id="empty" class="empty" hidden>Nothing to do. Add a task above, or under a part of the day.</p>
+
+    <!-- Morning / Afternoon / Evening (and Anytime when it has tasks), drawn by app.js -->
+    <div id="parts"></div>
+
+    <button id="clear-done" class="text-btn danger" type="button" hidden>Clear done tasks</button>
+  </section>
+
+  <!-- Us tab: plans and the shared list, drawn by together-view.js -->
+  <section id="view-us" class="view" hidden>
+    <div id="us-root"></div>
+  </section>
+
+  <!-- Settings tab -->
+  <section id="view-settings" class="view" hidden>
+    <div class="card">
+      <h2>Account</h2>
+      <form id="signin-form" class="account-form" autocomplete="on" hidden>
+        <input id="signin-email" type="email" placeholder="Email" autocomplete="username" aria-label="Email"
+          autocapitalize="off" spellcheck="false">
+        <input id="signin-password" type="password" placeholder="Password" autocomplete="current-password"
+          aria-label="Password">
+        <button id="signin-btn" class="btn primary" type="submit">Sign in</button>
+      </form>
+      <div id="account-in" hidden>
+        <p>Signed in as <b id="account-email"></b></p>
+        <button id="sync-now" class="btn" type="button">Sync now</button>
+        <details id="password-box">
+          <summary class="btn">Change password</summary>
+          <form id="password-form" class="account-form">
+            <input id="new-password" type="password" placeholder="New password (8+ characters)"
+              autocomplete="new-password" aria-label="New password">
+            <button class="btn primary" type="submit">Save new password</button>
+          </form>
+        </details>
+        <button id="signout-btn" class="btn" type="button">Sign out</button>
+      </div>
+      <p id="sync-status" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2>Backup</h2>
+      <p id="backup-status" class="muted"></p>
+      <button id="export-btn" class="btn primary" type="button">Save a backup</button>
+      <button id="import-btn" class="btn" type="button">Restore from a backup file</button>
+      <button id="snapshot-btn" class="btn" type="button"></button>
+      <input id="import-file" type="file" accept="application/json,.json" hidden>
+    </div>
+
+    <div class="card">
+      <h2>Privacy</h2>
+      <p id="privacy-text">Your tasks are stored only on this phone. Nothing is sent anywhere until you sign in. No tracking, no ads.</p>
+      <p id="persist-status" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2>Install on iPhone</h2>
+      <ol class="steps">
+        <li>Open the app link in <b>Safari</b></li>
+        <li>Tap <b>Share</b>, then <b>Add to Home Screen</b></li>
+        <li>Open <b>Daily</b> from the home screen from now on</li>
+      </ol>
+    </div>
+
+    <p class="muted center">Daily · version <span id="app-version"></span></p>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button class="tab active" type="button" data-view="todo">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.5 12.2l2.4 2.4 4.6-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    To-do
+  </button>
+  <button class="tab" type="button" data-view="us">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="9" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16.5" cy="10" r="2.6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3.5 19c.6-3 2.8-4.6 5.5-4.6s4.9 1.6 5.5 4.6M14.6 14.6c.6-.2 1.2-.3 1.9-.3 2.2 0 3.9 1.3 4.4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <span>Us <span id="us-count" class="tab-count" hidden></span></span>
+  </button>
+  <button class="tab" type="button" data-view="settings">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    Settings
+  </button>
+</nav>
+
+<div id="toast" class="toast" role="status" hidden>
+  <span id="toast-text"></span>
+  <button id="toast-undo" type="button" hidden>Undo</button>
+</div>
+</body>
+</html>
