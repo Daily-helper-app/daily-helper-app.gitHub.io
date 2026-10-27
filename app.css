@@ -215,6 +215,27 @@ main { padding: 12px 16px 24px; }
 .past summary { font-weight: 600; cursor: pointer; }
 .past .plan-card { margin-top: 10px; box-shadow: none; background: var(--bg); }
 .invite .code { margin: 8px 0; font-size: 34px; font-weight: 700; letter-spacing: .18em; text-align: center; }
+details.invite summary { font-weight: 600; cursor: pointer; }
+details.people-box summary { font-weight: 600; cursor: pointer; }
+.people { margin: 10px 0 4px; padding: 0; list-style: none; }
+.person { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; border-top: 1px solid var(--line); }
+.person .text-btn { margin: 0; padding: 10px 0; }
+#join-box { margin-top: 12px; }
+#join-box summary { list-style: none; cursor: pointer; }
+#join-box summary::-webkit-details-marker { display: none; }
+/* Space chips: one per shared space, with its waiting count; scrolls sideways when there are many */
+.space-bar { display: flex; gap: 6px; margin: 0 0 12px; overflow-x: auto; scrollbar-width: none; }
+.space-bar::-webkit-scrollbar { display: none; }
+.space-chip {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; max-width: 70%; padding: 10px 16px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--text); font-size: 15px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.space-chip.on { border-color: var(--accent); background: var(--accent); color: var(--accent-text); }
+.chip-count {
+  min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--danger); color: #fff;
+  font-size: 12px; font-weight: 700; text-align: center;
+}
 /* Busy page (busy.html) and the busy-link card */
 .busy-day h2 { font-size: 17px; }
 .busy-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }

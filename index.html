@@ -70,6 +70,21 @@
           aria-label="Password">
         <button id="signin-btn" class="btn primary" type="submit">Sign in</button>
       </form>
+      <!-- New people: an invite code from someone in the family makes the account -->
+      <details id="join-box" hidden>
+        <summary class="btn">New here? Join with a code</summary>
+        <form id="join-form" class="account-form" autocomplete="on">
+          <input id="join-code" type="text" maxlength="6" placeholder="6-letter code" aria-label="Invite code"
+            autocapitalize="characters" autocomplete="off" spellcheck="false">
+          <input id="join-name" type="text" maxlength="40" placeholder="Your first name" aria-label="Your name"
+            autocomplete="given-name">
+          <input id="join-email" type="email" placeholder="Email" autocomplete="username" aria-label="Email"
+            autocapitalize="off" spellcheck="false">
+          <input id="join-password" type="password" placeholder="Pick a password (8+ characters)"
+            autocomplete="new-password" aria-label="Pick a password">
+          <button id="join-btn" class="btn primary" type="submit">Join</button>
+        </form>
+      </details>
       <div id="account-in" hidden>
         <p>Signed in as <b id="account-email"></b></p>
         <button id="sync-now" class="btn" type="button">Sync now</button>

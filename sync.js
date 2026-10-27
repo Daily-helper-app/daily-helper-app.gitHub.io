@@ -187,6 +187,7 @@ const Sync = (() => {
 
   function renderAccount() {
     $("signin-form").hidden = !!user || !client;
+    $("join-box").hidden = !!user || !client;
     $("account-in").hidden = !user;
     if (!client) setStatus("The account server can't be loaded right now. Your list works as usual on this phone.");
     else if (!user) setStatus("Not signed in. Your tasks are only on this phone.");
@@ -213,6 +214,67 @@ const Sync = (() => {
     }
     $("signin-password").value = "";
     toast("Signed in. Using a temporary password? Change it below.");
+  }
+
+  // Joining with an invite code: the server function `join` (supabase/functions/join) checks the code, makes the
+  // account and puts the person in that space; then this phone signs in with it.
+  const JOIN_ERRORS = {
+    bad_code: "That code doesn't work. Codes work once, for 24 hours. Ask for a new one.",
+    bad_name: "Type your first name.",
+    bad_email: "That email doesn't look right.",
+    bad_password: "Pick a password with at least 8 characters.",
+    email_taken: "That email has an account already. Sign in above, then type the code on the Us tab.",
+    space_full: "That space is full.",
+    too_many_tries: "Too many wrong codes were tried. Joining is paused for up to an hour: try again later, or ask " +
+      "the person who invited you.",
+  };
+
+  async function join(e) {
+    e.preventDefault();
+    const body = {
+      code: $("join-code").value.trim().toUpperCase(),
+      name: $("join-name").value.trim(),
+      email: $("join-email").value.trim(),
+      password: $("join-password").value,
+    };
+    if (body.code.length !== 6) { setStatus("Type the 6-letter code."); return; }
+    if (!body.name) { setStatus(JOIN_ERRORS.bad_name); return; }
+    if (!body.email) { setStatus(JOIN_ERRORS.bad_email); return; }
+    if (body.password.length < 8) { setStatus(JOIN_ERRORS.bad_password); return; }
+    const btn = $("join-btn");
+    btn.disabled = true;
+    setStatus("Joining…");
+    try {
+      const { error } = await client.functions.invoke("join", { body });
+      if (error) {
+        let code = "";
+        try { code = (await error.context.json()).error || ""; } catch (_) {}
+        // A join can work even when its reply is lost (bad signal), and then a retry says "bad code" or "email
+        // taken". So after an unclear answer, try signing in with what was typed: if that works, they're in.
+        if (!["bad_name", "bad_email", "bad_password", "space_full", "too_many_tries"].includes(code)) {
+          const { error: e3 } = await client.auth.signInWithPassword({ email: body.email, password: body.password });
+          if (!e3) {
+            $("join-password").value = "";
+            $("join-box").open = false;
+            setStatus("");   // the first sync fills it in
+            toast("Signed in. If the space isn't on the Us tab, ask for a new code and type it there.");
+            return;
+          }
+        }
+        setStatus(JOIN_ERRORS[code] ||
+          (navigator.onLine ? "Couldn't join right now. Try again in a moment." : "You're offline. Join when you have signal."));
+        return;
+      }
+      const { error: e2 } = await client.auth.signInWithPassword({ email: body.email, password: body.password });
+      if (e2) { setStatus("Your account is ready, but signing in didn't work: " + e2.message + ". Sign in above."); return; }
+      $("join-password").value = "";
+      $("join-code").value = "";
+      $("join-box").open = false;
+      setStatus("");
+      toast("Welcome! Your shared space is on the Us tab.");
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   async function changePassword(e) {
@@ -243,6 +305,7 @@ const Sync = (() => {
       client = null;   // the library didn't load (e.g. offline on first open): the list still works
     }
     $("signin-form").addEventListener("submit", signIn);
+    $("join-form").addEventListener("submit", join);
     $("password-form").addEventListener("submit", changePassword);
     $("signout-btn").addEventListener("click", signOut);
     $("sync-now").addEventListener("click", () => { setStatus("Syncing…"); syncNow(); });

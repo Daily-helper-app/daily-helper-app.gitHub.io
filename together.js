@@ -1,7 +1,8 @@
-// Daily App: the shared space for two people ("Together"): shared tasks and plans.
-// Data part: loads the group, its shared tasks and plans, keeps them live, and sends changes. The screen part
-// (together-view.js) draws it. Plans only change through the database functions in supabase/setup.sql, which
-// check the rules (no approving your own suggestion, no answering an old version).
+// Daily App: shared spaces (e.g. "Us", "Family"): shared tasks and plans.
+// Data part: loads the space, its people, shared tasks and the plans you're in, keeps them live, and sends changes.
+// The screen part (together-view.js) draws it. Plans only change through the database functions in supabase/
+// (setup.sql, family-2.sql), which check the rules (only people in a plan see or answer it, one answer each, no
+// answering an old time).
 "use strict";
 
 const Together = (() => {
@@ -19,8 +20,10 @@ const Together = (() => {
   let lastError = "";
   const listeners = [];
 
+  // groups = every space you're in; waitingBy = plans waiting for you, per space (so no space's plans are missed);
+  // people = who is in each plan and their answer ("waiting", "going", "cant")
   function emptyData() {
-    return { userId: null, group: null, members: [], items: [], events: {} };
+    return { userId: null, groups: [], waitingBy: {}, group: null, members: [], items: [], events: {}, people: {} };
   }
 
   function emit() { for (const fn of listeners) fn(); }
@@ -32,7 +35,7 @@ const Together = (() => {
   function loadCache(userId) {
     try {
       const c = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-      if (c && c.userId === userId) return c;
+      if (c && c.userId === userId) return { ...emptyData(), ...c };   // copies saved by v0.6 have no space list
     } catch (_) {}
     return { ...emptyData(), userId };
   }
@@ -56,7 +59,15 @@ const Together = (() => {
     if (m.includes("own_suggestion")) return "You suggested this one, so the other person answers it.";
     if (m.includes("day_passed")) return "That day has passed. Pick a later day.";
     if (m.includes("bad_code")) return "That code doesn't work. Codes work once, for 24 hours.";
+    if (m.includes("already_member")) return "You're in that space already.";
+    if (m.includes("space_full")) return "That space is full.";
     if (m.includes("need_day_and_part")) return "Pick a day and a part of the day.";
+    if (m.includes("already_answered")) return "You answered this plan already.";
+    if (m.includes("plan_on")) return "Someone is going already, so the time stays. Answer Going or Can't.";
+    if (m.includes("not_in_space")) return "Someone you picked isn't in this space any more. Pick again.";
+    if (m.includes("no_people")) return "Pick at least one person.";
+    if (m.includes("not_owner")) return "Only the person who runs this space can do that.";
+    if (m.includes("not_member")) return "That person isn't in this space any more.";
     if (!navigator.onLine) return "You're offline. Try again when you have signal.";
     return "Couldn't reach the account server. Try again in a moment.";
   }
@@ -67,32 +78,50 @@ const Together = (() => {
     if (!client || !user) return;
     try {
       await client.rpc("expire_plans");
-      const { data: groups, error: e1 } = await client.from("groups").select("id,name,created_at").order("created_at");
+      const { data: groups, error: e1 } = await client.from("groups").select("id,name,created_at,owner_id").order("created_at");
       if (e1) throw e1;
       // The space to show: the one you joined or started last on this phone, else the first one
       let preferred = null;
       try { preferred = localStorage.getItem(GROUP_KEY + "." + user.id); } catch (_) {}
-      const next = { ...emptyData(), userId: user.id, group: groups.find(g => g.id === preferred) || groups[0] || null };
+      const next = { ...emptyData(), userId: user.id, groups,
+        group: groups.find(g => g.id === preferred) || groups[0] || null };
+      // Plans waiting for your answer in every space (the rules only return plans you're in)
+      if (groups.length) {
+        const { data: waiting, error: ew } = await client.from("plan_people").select("items!inner(group_id,status,day)")
+          .eq("user_id", user.id).eq("answer", "waiting").in("items.status", ["suggested", "approved"]);
+        if (ew) throw ew;
+        for (const w of waiting) {
+          if (stillOpen(w.items)) next.waitingBy[w.items.group_id] = (next.waitingBy[w.items.group_id] || 0) + 1;
+        }
+      }
       if (next.group) {
         const g = next.group.id;
         const [members, items] = await Promise.all([
-          client.from("group_members").select("user_id").eq("group_id", g),
+          client.from("group_members").select("user_id,joined_at,invited_by,owner_seen").eq("group_id", g).order("joined_at"),
           client.from("items").select(ITEM_COLUMNS).eq("group_id", g).order("created_at"),
         ]);
         if (members.error) throw members.error;
         if (items.error) throw items.error;
         const ids = members.data.map(m => m.user_id);
-        const { data: profiles, error: e2 } = await client.from("profiles").select("id,display_name").in("id", ids);
+        // Names of the people here and of whoever invited them (the rules only return people you share a space with)
+        const nameIds = [...new Set([...ids, ...members.data.map(m => m.invited_by).filter(Boolean)])];
+        const { data: profiles, error: e2 } = await client.from("profiles").select("id,display_name").in("id", nameIds);
         if (e2) throw e2;
-        next.members = ids.map(id => ({ id, name: (profiles.find(p => p.id === id) || {}).display_name || "" }));
+        const nameFor = id => (profiles.find(p => p.id === id) || {}).display_name || "";
+        next.members = members.data.map(m => ({ id: m.user_id, name: nameFor(m.user_id), joinedAt: m.joined_at,
+          invitedBy: m.invited_by, invitedByName: nameFor(m.invited_by), ownerSeen: m.owner_seen !== false }));
         next.items = items.data;
         const planIds = items.data.filter(i => i.kind === "plan").map(i => i.id);
         if (planIds.length) {
-          const { data: events, error: e3 } = await client.from("plan_events")
-            .select("item_id,actor,action,day,part,exact_time,note,plan_version,created_at")
-            .in("item_id", planIds).order("created_at");
-          if (e3) throw e3;
-          for (const ev of events) (next.events[ev.item_id] = next.events[ev.item_id] || []).push(ev);
+          const [events, people] = await Promise.all([
+            client.from("plan_events").select("item_id,actor,action,day,part,exact_time,note,plan_version,created_at")
+              .in("item_id", planIds).order("created_at"),
+            client.from("plan_people").select("item_id,user_id,answer").in("item_id", planIds),
+          ]);
+          if (events.error) throw events.error;
+          if (people.error) throw people.error;
+          for (const ev of events.data) (next.events[ev.item_id] = next.events[ev.item_id] || []).push(ev);
+          for (const pp of people.data) (next.people[pp.item_id] = next.people[pp.item_id] || []).push(pp);
         }
       } else {
         // Your own name is still needed for the first screen
@@ -145,7 +174,38 @@ const Together = (() => {
   const me = () => data.members.find(m => m.id === (user && user.id));
   const myName = () => (me() && me().name) || "";
   const nameOf = id => (data.members.find(m => m.id === id) || {}).name || "Someone";
-  const partner = () => data.members.find(m => m.id !== (user && user.id)) || null;
+  const others = () => data.members.filter(m => m.id !== (user && user.id));
+
+  // Who runs the space: the person who started it, or (once they left) the longest member. Same rule as the
+  // server's space_owner() in family-2.sql; members come sorted by when they joined.
+  function owner() {
+    if (!data.group) return null;
+    return data.members.find(m => m.id === data.group.owner_id) || data.members[0] || null;
+  }
+  const isOwner = () => !!user && !!owner() && owner().id === user.id;
+
+  // Only the person who runs the space removes someone (the server checks this too)
+  async function removeMember(id) {
+    const { error } = await client.rpc("remove_member", { p_group: data.group.id, p_user: id });
+    await load();
+    return error ? explain(error) : "";
+  }
+
+  // Anyone can leave a space on their own (if the person who runs it leaves, the longest member takes over)
+  async function leaveGroup() {
+    const { error } = await client.from("group_members").delete().eq("group_id", data.group.id).eq("user_id", user.id);
+    if (error) return explain(error);
+    try { localStorage.removeItem(GROUP_KEY + "." + user.id); } catch (_) {}
+    await load();
+    return "";
+  }
+
+  // The person who runs the space has seen who joined with someone else's code
+  async function ackMember(id) {
+    const { error } = await client.rpc("ack_member", { p_group: data.group.id, p_user: id });
+    await load();
+    return error ? explain(error) : "";
+  }
 
   async function setName(name) {
     name = name.trim().slice(0, 40);
@@ -160,8 +220,16 @@ const Together = (() => {
     try { if (id) localStorage.setItem(GROUP_KEY + "." + user.id, id); } catch (_) {}
   }
 
-  async function createGroup() {
-    const { data: groupId, error } = await client.rpc("create_group", { p_name: "Together" });
+  // Shows another of your spaces (remembered on this phone)
+  async function switchGroup(id) {
+    if (!data.groups.some(g => g.id === id) || (data.group && data.group.id === id)) return;
+    rememberGroup(id);
+    await load();
+  }
+
+  async function createGroup(name) {
+    name = (name || "").trim().slice(0, 40) || "Together";
+    const { data: groupId, error } = await client.rpc("create_group", { p_name: name });
     if (error) return { error: explain(error) };
     rememberGroup(groupId);
     await load();
@@ -220,13 +288,15 @@ const Together = (() => {
   // ---------- Plans ----------
 
   // A plan suggested offline waits in the outbox with its own id, so sending it twice still adds it once.
-  async function suggestPlan({ title, day, part, time, note, details }) {
+  // people = the ids ticked (you're always in it); null = everyone in the space.
+  async function suggestPlan({ title, day, part, time, note, details, people }) {
     title = (title || "").trim().slice(0, 200);
     if (!title) return "Name the plan first.";
     if (!day || !part) return "Pick a day and a part of the day.";
+    if (people && !people.length) return "Pick at least one person.";
     const plan = { p_group: data.group.id, p_title: title, p_day: day, p_part: part, p_time: time || null,
       p_note: (note || "").trim().slice(0, 200) || null, p_id: makeId(),
-      p_details: (details || "").trim().slice(0, 1000) || null };
+      p_details: (details || "").trim().slice(0, 1000) || null, p_people: people ? [user.id, ...people] : null };
     if (!navigator.onLine) {
       setOutbox([...outbox(), plan]);
       emit();
@@ -264,7 +334,8 @@ const Together = (() => {
     if (left.length < list.length) reloadSoon(0);
   }
 
-  // action: "approved", "declined" or "countered" (with a new day / part / time)
+  // action: "approved" (Going), "declined" (Can't, or taking back your own suggestion) or "countered" (Other time,
+  // with a new day / part / time)
   async function answerPlan(id, action, extra = {}) {
     const plan = data.items.find(i => i.id === id);
     if (!plan) return "That plan is gone.";
@@ -277,7 +348,7 @@ const Together = (() => {
     return error ? explain(error) : "";
   }
 
-  // Either person can change a plan's details; the change is kept in its history
+  // Anyone in the plan can change its details; the change is kept in its history
   async function setDetails(id, details) {
     const { error } = await client.rpc("set_plan_details", { p_item: id, p_details: (details || "").slice(0, 1000) });
     await load();
@@ -327,17 +398,32 @@ const Together = (() => {
   const sortByDay = list => list.sort((a, b) => (a.day + partOrder(a.part)).localeCompare(b.day + partOrder(b.part)));
   const partOrder = p => String(["morning", "afternoon", "evening"].indexOf(p));
 
-  const lists = () => ({
-    waiting: sortByDay(plans().filter(p => p.status === "suggested" && p.last_by !== (user && user.id))),
-    sent: sortByDay(plans().filter(p => p.status === "suggested" && p.last_by === (user && user.id))),
-    upcoming: sortByDay(plans().filter(p => p.status === "approved" && p.day >= today())),
-    past: plans().filter(p => !(p.status === "suggested") && !(p.status === "approved" && p.day >= today()))
-      .sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
-    tasks: data.items.filter(i => i.kind === "task"),
-    outbox: outbox(),
-  });
+  // Who is in a plan and their answers; your own answer
+  const peopleIn = id => (data.people[id] || []).map(pp => ({ id: pp.user_id, name: nameOf(pp.user_id), answer: pp.answer }));
+  const answerOf = (p, id = user && user.id) => ((data.people[p.id] || []).find(pp => pp.user_id === id) || {}).answer;
+  // Still open for answers: waiting for the first Going, or on and not over yet (others may still answer)
+  const stillOpen = p => p.status === "suggested" || (p.status === "approved" && p.day >= today());
 
-  const waitingCount = () => lists().waiting.length;
+  function lists() {
+    const mine = user && user.id;
+    const waiting = plans().filter(p => answerOf(p) === "waiting" && stillOpen(p));
+    const sent = plans().filter(p => p.status === "suggested" && p.last_by === mine);
+    const upcoming = plans().filter(p => p.status === "approved" && p.day >= today() && answerOf(p) === "going");
+    const shown = new Set([...waiting, ...sent, ...upcoming]);
+    return {
+      waiting: sortByDay(waiting), sent: sortByDay(sent), upcoming: sortByDay(upcoming),
+      past: plans().filter(p => !shown.has(p)).sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
+      tasks: data.items.filter(i => i.kind === "task"),
+      outbox: outbox(),
+    };
+  }
+
+  // Every space together (the tab badge), or one space; the space on screen counts from its own fresh list
+  const waitingCount = groupId => {
+    const shown = data.group ? data.group.id : null;
+    if (groupId) return groupId === shown ? lists().waiting.length : data.waitingBy[groupId] || 0;
+    return data.groups.reduce((n, g) => n + (g.id === shown ? lists().waiting.length : data.waitingBy[g.id] || 0), 0);
+  };
 
   // ---------- Phone notifications ----------
   // iPhone: only in the app opened from the Home Screen (iOS 16.4+), and the request must come from a tap.
@@ -406,9 +492,10 @@ const Together = (() => {
   return {
     init, load, onChange: fn => listeners.push(fn),
     signedIn: () => !!user, online: () => online, error: () => lastError, clearError: () => { lastError = ""; },
-    group: () => data.group, members: () => data.members, me, myName, nameOf, partner, myId: () => user && user.id,
-    events: id => data.events[id] || [],
-    setName, createGroup, makeInvite, joinGroup,
+    group: () => data.group, groups: () => data.groups || [], members: () => data.members, me, myName, nameOf,
+    others, owner, isOwner, myId: () => user && user.id,
+    events: id => data.events[id] || [], peopleIn, answerOf,
+    setName, createGroup, makeInvite, joinGroup, switchGroup, removeMember, ackMember, leaveGroup,
     addTask, toggleTask, renameTask, deleteTask,
     suggestPlan, answerPlan, setDetails, lists, waitingCount,
     pushState, enablePush,

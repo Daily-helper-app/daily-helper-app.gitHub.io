@@ -1,5 +1,6 @@
 // Daily App: the "Us" tab. Draws what together.js holds: plans waiting for you on top, then plans you sent,
-// what's coming up, the shared list, and past plans. All text from the database is shown with textContent.
+// what's coming up, the shared list, the people in the space, and past plans. All text from the database is shown
+// with textContent.
 "use strict";
 
 const UsView = (() => {
@@ -16,6 +17,9 @@ const UsView = (() => {
   let busyLinkLoading = false;
   const historyOpen = new Set();   // plans whose History drop-down is open
   let pending = false;     // live data arrived while a form was open: redraw once it closes
+  let addingSpace = false; // the "+" chip is open: start or join another space
+  let inviteOpen = false;  // the "Invite someone" drop-down is open
+  let peopleOpen = false;  // the "People in …" drop-down is open
 
   // Small helper: el("div", { className: "x", onclick: f }, child, "text")
   function el(tag, props = {}, ...children) {
@@ -86,10 +90,27 @@ const UsView = (() => {
 
   // ---------- Pieces ----------
 
-  // Day + part of the day + optional time + note; used to suggest a plan and to suggest another time
+  // Day + part of the day + optional time + note; used to suggest a plan and to suggest another time.
+  // A new plan in a space with 3 or more people also picks who is in it (everyone is ticked to start with).
   function planFields(withTitle, startDay) {
     const d = draft || {};
     const title = withTitle ? el("input", { type: "text", maxlength: 200, placeholder: "What? (e.g. dinner out)", "aria-label": "Plan", value: d.title || "" }) : null;
+    const others = withTitle ? Together.others() : [];
+    const picked = new Set(d.picked || others.map(m => m.id));
+    const pickBtns = others.map(m => {
+      const b = el("button", { type: "button", className: picked.has(m.id) ? "on" : "", "aria-pressed": picked.has(m.id) ? "true" : "false" },
+        m.name || "Someone");
+      b.addEventListener("click", () => {
+        picked.has(m.id) ? picked.delete(m.id) : picked.add(m.id);
+        b.className = picked.has(m.id) ? "on" : "";
+        b.setAttribute("aria-pressed", picked.has(m.id) ? "true" : "false");
+      });
+      return b;
+    });
+    const pick = others.length > 1
+      ? el("div", {}, el("div", { className: "muted small" }, "Who's in it? (only they see what it is)"),
+          el("div", { className: "move" }, pickBtns))
+      : null;
     const day = el("input", { type: "date", value: d.day || startDay || dayKey(), min: dayKey(), "aria-label": "Day" });
     let part = d.part || currentPart();
     const partBtns = Object.entries(PART_LABELS).map(([id, label]) => {
@@ -109,10 +130,12 @@ const UsView = (() => {
       : null;
     if (details) details.value = d.details || "";
     const node = el("div", { className: "plan-fields" },
-      title, day, el("div", { className: "move" }, partBtns),
-      el("label", { className: "muted small" }, "Time (optional; with a time you both get a reminder when it starts) ", time), note, details);
+      title, pick, day, el("div", { className: "move" }, partBtns),
+      el("label", { className: "muted small" }, "Time (optional; with a time, everyone going gets a reminder when it starts) ", time), note, details);
+    // people = who is ticked, or null when it's everyone (then people who join later are in it too)
     const get = () => ({ title: title && title.value, day: day.value, part, time: time.value, note: note ? note.value : undefined,
-      details: details ? details.value : undefined });
+      details: details ? details.value : undefined, picked: [...picked],
+      people: others.length > 1 && picked.size < others.length ? [...picked] : null });
     liveForm = { id: openForm, get };
     return { node, get };
   }
@@ -126,7 +149,18 @@ const UsView = (() => {
       el("span", { className: "plan-more-hint" }, open ? "Close" : (p.details ? "Details" : "More")));
   }
 
-  // Shown when a plan is opened: its details (anyone can change them) and its history
+  // Who is going, still waiting or can't (only for plans with more than two people; with two, "From …" says it all)
+  function peopleLine(p) {
+    const people = Together.peopleIn(p.id);
+    if (people.length <= 2) return null;
+    const by = { going: [], waiting: [], cant: [] };
+    for (const x of people) if (by[x.answer]) by[x.answer].push(x.id === Together.myId() ? "You" : x.name || "Someone");
+    const text = [["Going", by.going], ["Waiting", by.waiting], ["Can't", by.cant]]
+      .filter(([, names]) => names.length).map(([word, names]) => word + ": " + names.join(", ")).join(" · ");
+    return el("div", { className: "muted small" }, text);
+  }
+
+  // Shown when a plan is opened: its details (anyone in it can change them) and its history
   function planMore(p) {
     if (!expanded.has(p.id)) return null;
     const box = el("div", { className: "plan-more" });
@@ -166,11 +200,13 @@ const UsView = (() => {
     return box;
   }
 
+  // A plan that is on already (someone said Going) keeps its time: then the choice is Going or Can't
   function waitingCard(p) {
     const card = el("div", { className: "plan-card" },
       planHead(p),
       el("div", { className: "muted" }, whenText(p)),
-      el("div", { className: "muted small" }, "From " + Together.nameOf(p.last_by)),
+      el("div", { className: "muted small" }, "From " + Together.nameOf(p.last_by) + (p.status === "approved" ? " · it's on" : "")),
+      peopleLine(p),
       noteLine(p));
     if (openForm === p.id) {
       const f = planFields(false, p.day);
@@ -183,25 +219,27 @@ const UsView = (() => {
         }) }, "Send other time"),
         el("button", { type: "button", className: "btn", onclick: closeForm }, "Cancel")));
     } else {
-      card.append(el("div", { className: "btn-row three" },
-        el("button", { type: "button", className: "btn primary", onclick: () => act(() => Together.answerPlan(p.id, "approved")) }, "Approve"),
-        el("button", { type: "button", className: "btn", onclick: () => { openForm = p.id; draft = null; draw(true); } }, "Other time"),
+      const open = p.status === "suggested";
+      card.append(el("div", { className: "btn-row" + (open ? " three" : "") },
+        el("button", { type: "button", className: "btn primary", onclick: () => act(() => Together.answerPlan(p.id, "approved")) }, "Going"),
+        open ? el("button", { type: "button", className: "btn", onclick: () => { openForm = p.id; draft = null; draw(true); } }, "Other time") : null,
         el("button", { type: "button", className: "btn", onclick: () => act(() => {
-          const note = prompt("Decline this plan? Add a short reason if you like (optional):", "");
+          const note = prompt("Can't make it? Add a short reason if you like (optional):", "");
           if (note === null) return "";
           return Together.answerPlan(p.id, "declined", { note });
-        }) }, "Decline")));
+        }) }, "Can't")));
     }
-    card.append(planMore(p));
+    const more = planMore(p);
+    if (more) card.append(more);   // append(null) would show the word "null"
     return card;
   }
 
   function sentCard(p) {
-    const partner = Together.partner();
+    const waitingFor = Together.peopleIn(p.id).filter(x => x.answer === "waiting").map(x => x.name || "Someone");
     return el("div", { className: "plan-card quiet" },
       planHead(p),
       el("div", { className: "muted" }, whenText(p)),
-      el("div", { className: "muted small" }, "Waiting for " + (partner ? partner.name || "them" : "them")),
+      peopleLine(p) || el("div", { className: "muted small" }, "Waiting for " + (waitingFor.length ? waitingFor.join(", ") : "answers")),
       noteLine(p),
       el("button", { type: "button", className: "text-btn left", onclick: () => act(() => {
         if (!confirm("Take this suggestion back?")) return "";
@@ -210,24 +248,33 @@ const UsView = (() => {
       planMore(p));
   }
 
-  // Approved and past plans: name, when, and (opened) details + history
+  // Approved and past plans: name, when, who's going, and (opened) details + history
   function plainCard(p, extra) {
     return el("div", { className: "plan-card quiet" },
       planHead(p),
       el("div", { className: "muted small" }, whenText(p) + (extra ? " · " + extra : "")),
+      peopleLine(p),
       noteLine(p),
       planMore(p));
+  }
+
+  // How a past plan ended, from your side
+  function pastWord(p) {
+    if (Together.answerOf(p) === "cant") return "you can't";
+    return { approved: "happened", declined: "declined", expired: "expired (no answer)", suggested: "still open" }[p.status] || p.status;
   }
 
   function historyList(p) {
     const evs = Together.events(p.id);
     if (!evs.length) return null;
-    const words = { suggested: "suggested", countered: "suggested another time", approved: "approved",
-      declined: "declined", expired: "expired (no answer)", details: "changed the details" };
+    const words = { suggested: "suggested", countered: "suggested another time", approved: "said Going",
+      declined: "said Can't", expired: "expired (no answer)", details: "changed the details" };
+    const takenBack = e => e.action === "declined" && e.note === "taken back";
     return el("ul", { className: "history" }, evs.map(e => el("li", {},
-      (e.actor ? (e.actor === Together.myId() ? "You" : Together.nameOf(e.actor)) + " " : "") + words[e.action] +
+      (e.actor ? (e.actor === Together.myId() ? "You" : Together.nameOf(e.actor)) + " " : "") +
+      (takenBack(e) ? "took it back" : words[e.action]) +
       (e.action === "suggested" || e.action === "countered" ? " " + whenText(e) : "") +
-      (e.note ? ' · "' + e.note + '"' : "") +
+      (e.note && !takenBack(e) ? ' · "' + e.note + '"' : "") +
       " · " + new Date(e.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))));
   }
 
@@ -242,7 +289,7 @@ const UsView = (() => {
     } }, t.title);
     if (t.done && t.done_by) text.append(el("span", { className: "by" }, " · " + (t.done_by === Together.myId() ? "you" : Together.nameOf(t.done_by))));
     const del = el("button", { type: "button", className: "del", "aria-label": "Delete task",
-      onclick: () => { if (confirm("Delete this shared task for both of you?")) Together.deleteTask(t.id); } }, "×");
+      onclick: () => { if (confirm("Delete this shared task for everyone in this space?")) Together.deleteTask(t.id); } }, "×");
     li.append(check, text, del);
     return li;
   }
@@ -254,40 +301,125 @@ const UsView = (() => {
       const name = el("input", { type: "text", maxlength: 40, placeholder: "Your first name", "aria-label": "Your name" });
       root.append(el("div", { className: "card" },
         el("h2", {}, "What should we call you?"),
-        el("p", { className: "muted" }, "The other person sees this name on plans and shared tasks."),
+        el("p", { className: "muted" }, "People in your shared spaces see this name on plans and shared tasks."),
         el("form", { className: "account-form", onsubmit: e => { e.preventDefault(); act(() => Together.setName(name.value)); } },
           name, el("button", { type: "submit", className: "btn primary" }, "Save"))));
       return;
     }
-    const code = el("input", { type: "text", maxlength: 6, placeholder: "6-letter code", "aria-label": "Invite code",
-      autocapitalize: "characters", spellcheck: "false" });
-    root.append(
-      el("div", { className: "card" },
-        el("h2", {}, "Share with someone"),
-        el("p", { className: "muted" }, "One of you starts a shared space and gets a code. The other types the code."),
-        el("button", { type: "button", className: "btn primary", onclick: () => act(async () => {
-          const r = await Together.createGroup();
-          invite = r.code ? r : null;
-          return r.error || "";
-        }) }, "Start a shared space")),
-      el("div", { className: "card" },
-        el("h2", {}, "I have a code"),
-        el("form", { className: "account-form", onsubmit: e => { e.preventDefault(); act(() => Together.joinGroup(code.value)); } },
-          code, el("button", { type: "submit", className: "btn" }, "Join"))));
+    root.append(...spaceCards(true));
   }
 
-  function inviteCard() {
-    return el("div", { className: "card invite" },
-      el("h2", {}, "Invite the other person"),
+  // Start a space (with its name) or join one with a code. first = you're in no space yet.
+  function spaceCards(first) {
+    const name = el("input", { type: "text", maxlength: 40, placeholder: "Name, e.g. Us or Family", "aria-label": "Space name" });
+    const code = el("input", { type: "text", maxlength: 6, placeholder: "6-letter code", "aria-label": "Invite code",
+      autocapitalize: "characters", spellcheck: "false" });
+    return [
+      el("div", { className: "card" },
+        el("h2", {}, first ? "Share with someone" : "Start another space"),
+        el("p", { className: "muted" }, first
+          ? "Start a shared space and invite people with a code, or type a code someone gave you."
+          : "Each space has its own plans, list and invite codes (e.g. one for the two of you, one for the family)."),
+        el("form", { className: "account-form", onsubmit: e => { e.preventDefault(); act(async () => {
+          const r = await Together.createGroup(name.value);
+          invite = r.code ? r : null;
+          if (!r.error) addingSpace = false;
+          return r.error || "";
+        }); } }, name, el("button", { type: "submit", className: "btn primary" }, "Start a shared space"))),
+      el("div", { className: "card" },
+        el("h2", {}, "I have a code"),
+        el("form", { className: "account-form", onsubmit: e => { e.preventDefault(); act(async () => {
+          const err = await Together.joinGroup(code.value);
+          if (!err) { addingSpace = false; invite = null; }
+          return err;
+        }); } }, code, el("button", { type: "submit", className: "btn" }, "Join"))),
+    ];
+  }
+
+  // One chip per space, with the number of plans waiting for you there; "+" starts or joins another
+  function spaceBar() {
+    const current = Together.group();
+    const chips = Together.groups().map(g => {
+      const n = Together.waitingCount(g.id);
+      return el("button", { type: "button", className: "space-chip" + (!addingSpace && current && g.id === current.id ? " on" : ""),
+        onclick: () => { addingSpace = false; invite = null; openForm = null; draft = null; act(() => Together.switchGroup(g.id)); } },
+        g.name, n ? el("span", { className: "chip-count" }, String(n)) : null);
+    });
+    chips.push(el("button", { type: "button", className: "space-chip" + (addingSpace ? " on" : ""), "aria-label": "Start or join another space",
+      onclick: () => { addingSpace = !addingSpace; draw(true); } }, "+"));
+    return el("div", { className: "space-bar" }, chips);
+  }
+
+  // alone = nobody else is in this space yet (then this card comes first)
+  function inviteCard(alone) {
+    const space = Together.group() ? Together.group().name : "this space";
+    const body = [
       invite
         ? [el("p", { className: "code" }, invite.code),
-           el("p", { className: "muted" }, "They sign in, open Us, tap \"I have a code\" and type this. Works once, for 24 hours.")]
+           el("p", { className: "muted" }, "Works once, for 24 hours. With an account: Us → \"I have a code\". " +
+             "New to Daily: Settings → \"New here? Join with a code\".")]
         : el("p", { className: "muted" }, "Make a code and give it to them in person or by text."),
       el("button", { type: "button", className: "btn", onclick: () => act(async () => {
         const r = await Together.makeInvite();
         invite = r.code ? r : invite;
         return r.error || "";
-      }) }, invite ? "Make a new code" : "Make a code"));
+      }) }, invite ? "Make a new code" : "Make a code")];
+    if (alone) return el("div", { className: "card invite" }, el("h2", {}, "Invite someone to " + space), body);
+    const box = el("details", { className: "card invite", open: inviteOpen || !!invite },
+      el("summary", {}, "Invite someone to " + space), body);
+    box.addEventListener("toggle", () => { inviteOpen = box.open; });
+    return box;
+  }
+
+  // The person who runs the space sees who joined with someone else's code, and keeps or removes them
+  function newPeopleCards() {
+    if (!Together.isOwner()) return [];
+    const space = Together.group().name;
+    return Together.members().filter(m => !m.ownerSeen && m.id !== Together.myId()).map(m =>
+      el("div", { className: "card" },
+        el("h2", {}, (m.name || "Someone") + " joined " + space),
+        el("p", { className: "muted" }, (m.invitedByName ? "Invited by " + m.invitedByName + "." : "Joined with a code.") +
+          " Did you talk about it? If not, you can remove them."),
+        el("div", { className: "btn-row" },
+          el("button", { type: "button", className: "btn primary", onclick: () => act(() => Together.ackMember(m.id)) }, "Keep"),
+          el("button", { type: "button", className: "btn", onclick: () => act(() => removeAsk(m)) }, "Remove"))));
+  }
+
+  function removeAsk(m) {
+    const space = Together.group().name;
+    if (!confirm("Remove " + (m.name || "this person") + " from " + space + "? They stop seeing its plans and list. " +
+      "They can come back only with a new code.")) return "";
+    return Together.removeMember(m.id);
+  }
+
+  // Everyone in the space: who runs it, who invited whom; the person who runs it can remove people
+  function peopleCard() {
+    const space = Together.group().name;
+    const owner = Together.owner();
+    const runner = Together.isOwner();
+    const rows = Together.members().map(m => {
+      const bits = [m.id === Together.myId() ? "you" : null, owner && m.id === owner.id ? "runs this space" : null,
+        m.invitedByName ? "invited by " + m.invitedByName : null].filter(Boolean);
+      return el("li", { className: "person" },
+        el("span", {}, m.name || "Someone", bits.length ? el("span", { className: "by" }, " · " + bits.join(" · ")) : null),
+        runner && m.id !== Together.myId()
+          ? el("button", { type: "button", className: "text-btn danger", onclick: () => act(() => removeAsk(m)) }, "Remove")
+          : null);
+    });
+    const box = el("details", { className: "card people-box", open: peopleOpen },
+      el("summary", {}, "People in " + space + " · " + rows.length),
+      el("ul", { className: "people" }, rows),
+      el("p", { className: "muted small" }, runner
+        ? "You run this space: you can remove people. Anyone here can invite."
+        : "Anyone here can invite. " + (owner ? (owner.name || "The person who started it") : "The person who started it") +
+          " runs it and can remove people."),
+      el("button", { type: "button", className: "text-btn left danger", onclick: () => act(() => {
+        if (!confirm("Leave " + space + "? You stop seeing its plans and list. You can come back only with a new code." +
+          (runner ? " The person here longest will run it." : ""))) return "";
+        return Together.leaveGroup();
+      }) }, "Leave " + space));
+    box.addEventListener("toggle", () => { peopleOpen = box.open; });
+    return box;
   }
 
   // Your busy link: one link for family (a sister, a mother-in-law) that shows when you have plans, in every shared
@@ -373,9 +505,12 @@ const UsView = (() => {
 
   function mainScreen(root) {
     const L = Together.lists();
-    const partner = Together.partner();
+    const others = Together.others();
 
-    if (!partner) root.append(inviteCard());
+    root.append(spaceBar());
+    if (addingSpace) { root.append(...spaceCards(false)); return; }
+    root.append(...newPeopleCards());
+    if (!others.length) root.append(inviteCard(true));
     const push = pushCard();
     if (push) root.append(push);
 
@@ -384,7 +519,7 @@ const UsView = (() => {
     }
 
     // Suggest a plan
-    if (partner) {
+    if (others.length) {
       if (openForm === "suggest") {
         const f = planFields(true);
         root.append(el("div", { className: "card" },
@@ -395,7 +530,7 @@ const UsView = (() => {
               const err = await Together.suggestPlan(draft);
               if (!err) { openForm = null; draft = null; }
               return err;
-            }) }, "Send to " + (partner.name || "them")),
+            }) }, others.length === 1 ? "Send to " + (others[0].name || "them") : "Send"),
             el("button", { type: "button", className: "btn", onclick: closeForm }, "Cancel"))));
       } else {
         root.append(el("button", { type: "button", className: "btn primary suggest", onclick: () => { openForm = "suggest"; draft = null; draw(true); } },
@@ -414,6 +549,8 @@ const UsView = (() => {
       root.append(el("h3", { className: "us-head" }, "Coming up"), ...L.upcoming.map(p => plainCard(p)));
     }
     root.append(busyLinkCard());
+    if (others.length) root.append(inviteCard(false));
+    root.append(peopleCard());
 
     // Shared list
     const input = el("input", { id: "us-add", type: "text", maxlength: 200, placeholder: "Add to the shared list", "aria-label": "New shared task", enterkeyhint: "done" });
@@ -430,12 +567,12 @@ const UsView = (() => {
       } }, input, el("button", { type: "submit", className: "add-btn", "aria-label": "Add shared task" }, "+")));
     const open = L.tasks.filter(t => !t.done), done = L.tasks.filter(t => t.done);
     if (L.tasks.length) root.append(el("ul", { className: "list" }, [...open, ...done].map(taskRowShared)));
-    else root.append(el("p", { className: "muted" }, "Nothing shared yet. Anything added here shows on both phones."));
+    else root.append(el("p", { className: "muted" }, "Nothing shared yet. Anything added here shows for everyone in this space."));
 
     if (L.past.length) {
       const past = el("details", { className: "card past", open: pastOpen },
         el("summary", {}, "Past plans · " + L.past.length),
-        L.past.map(p => plainCard(p, p.status)));
+        L.past.map(p => plainCard(p, pastWord(p))));
       past.addEventListener("toggle", () => { pastOpen = past.open; });
       root.append(past);
     }
@@ -489,7 +626,8 @@ const UsView = (() => {
     Together.onChange(() => draw());
     // Another account signed in (or out): nothing from the previous person stays on the Us tab
     if (typeof Sync !== "undefined") Sync.onUserChange(() => {
-      busyLink = undefined; busyLinkLoading = false; invite = null; message = "";
+      busyLink = undefined; busyLinkLoading = false; invite = null; message = ""; addingSpace = false; inviteOpen = false;
+      peopleOpen = false;
       openForm = null; draft = null; liveForm = null; pastOpen = false;
       expanded.clear(); historyOpen.clear();
       draw(true);
