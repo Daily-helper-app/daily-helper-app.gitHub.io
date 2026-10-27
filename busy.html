@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Safety: only this app's own files may load or run; the only other site it may talk to is its own account server -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://jgljhwydqghnmutywkzp.supabase.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>Busy times</title>
+<meta name="theme-color" content="#f4f4f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f0f12" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="app.css">
+<script src="config.js" defer></script>
+<script src="busy.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <h1 id="busy-title">Busy times</h1>
+  <p id="busy-sub" class="sub">Loading…</p>
+</header>
+<main>
+  <div id="busy-root"></div>
+  <p class="muted small center busy-foot">Only shows when plans are, never what they are. Made with Daily.</p>
+</main>
+</body>
+</html>

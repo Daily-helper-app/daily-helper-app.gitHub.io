@@ -265,6 +265,30 @@ const Together = (() => {
     return error ? explain(error) : "";
   }
 
+  // ---------- Personal busy link ----------
+  // One link per person that shows when they're busy (supabase/busy-link.sql). Anyone with it can look; a new link
+  // turns the old one off.
+
+  async function getBusyLink() {
+    const { data: rows, error } = await client.from("share_links").select("token,created_at")
+      .eq("user_id", user.id).eq("active", true).order("created_at", { ascending: false }).limit(1);
+    if (error) return { error: explain(error) };
+    return { token: rows && rows[0] ? rows[0].token : null };
+  }
+
+  async function newBusyLink() {
+    const off = await client.from("share_links").update({ active: false }).eq("user_id", user.id).eq("active", true);
+    if (off.error) return { error: explain(off.error) };
+    const { data: row, error } = await client.from("share_links").insert({ user_id: user.id }).select("token").single();
+    if (error) return { error: explain(error) };
+    return { token: row.token };
+  }
+
+  async function turnOffBusyLink() {
+    const { error } = await client.from("share_links").update({ active: false }).eq("user_id", user.id).eq("active", true);
+    return error ? explain(error) : "";
+  }
+
   // ---------- Lists for the screen ----------
 
   const today = () => dayKey();
@@ -346,6 +370,7 @@ const Together = (() => {
     addTask, toggleTask, renameTask, deleteTask,
     suggestPlan, answerPlan, setDetails, lists, waitingCount,
     pushState, enablePush,
+    getBusyLink, newBusyLink, turnOffBusyLink,
   };
 })();
 

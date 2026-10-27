@@ -11,6 +11,8 @@ const UsView = (() => {
   let busy = false;
   const expanded = new Set();   // plans opened to show their details and history
   let pastOpen = false;
+  let busyLink;                 // your busy link's token: undefined = not loaded yet, null = none
+  let busyLinkLoading = false;
   const historyOpen = new Set();   // plans whose History drop-down is open
   let pending = false;     // live data arrived while a form was open: redraw once it closes
 
@@ -282,6 +284,65 @@ const UsView = (() => {
       }) }, invite ? "Make a new code" : "Make a code"));
   }
 
+  // Your busy link: one link for family (a sister, a mother-in-law) that shows when you have plans, in every shared
+  // space you're in. They see busy times only, never what the plans are.
+  function busyLinkUrl(token) {
+    return location.origin + location.pathname.replace(/[^/]*$/, "") + "busy.html#" + token;
+  }
+
+  function busyLinkCard() {
+    const card = el("div", { className: "card" }, el("h2", {}, "Your busy link"),
+      el("p", { className: "muted" }, "Give family one link that shows when you have plans, so they know before they ask. " +
+        "They see days and times only, never what the plans are."));
+    if (busyLink === undefined) {
+      card.append(el("p", { className: "muted small" }, "Loading…"));
+      if (!busyLinkLoading) {
+        busyLinkLoading = true;
+        Together.getBusyLink().then(r => {
+          busyLinkLoading = false;
+          busyLink = r.error ? null : r.token;
+          if (r.error) message = r.error;
+          draw();   // waits if a form is open, so nothing typed is lost
+        });
+      }
+      return card;
+    }
+    if (!busyLink) {
+      card.append(el("button", { type: "button", className: "btn primary", onclick: () => act(async () => {
+        const r = await Together.newBusyLink();
+        if (r.token) busyLink = r.token;
+        return r.error || "";
+      }) }, "Make my link"));
+      return card;
+    }
+    const url = busyLinkUrl(busyLink);
+    card.append(
+      el("p", { className: "link-box" }, url),
+      el("button", { type: "button", className: "btn primary", onclick: () => act(async () => {
+        try {
+          if (navigator.share) await navigator.share({ title: "When I'm busy", url });
+          else { await navigator.clipboard.writeText(url); return "Link copied."; }
+        } catch (e) {
+          if (e && e.name === "AbortError") return "";
+          try { await navigator.clipboard.writeText(url); return "Link copied."; } catch (_) { return "Copy the link above by hand."; }
+        }
+        return "";
+      }) }, "Share link"),
+      el("button", { type: "button", className: "btn", onclick: () => act(async () => {
+        if (!confirm("Make a new link? The old one stops working, so anyone who has it needs the new one.")) return "";
+        const r = await Together.newBusyLink();
+        if (r.token) busyLink = r.token;
+        return r.error || "";
+      }) }, "Make a new link"),
+      el("button", { type: "button", className: "text-btn left danger", onclick: () => act(async () => {
+        if (!confirm("Turn your busy link off? Anyone who has it will see that it's turned off.")) return "";
+        const err = await Together.turnOffBusyLink();
+        if (!err) busyLink = null;
+        return err;
+      }) }, "Turn link off"));
+    return card;
+  }
+
   // Shown until notifications are on for this phone
   function pushCard() {
     const state = Together.pushState();
@@ -346,6 +407,7 @@ const UsView = (() => {
     if (L.upcoming.length) {
       root.append(el("h3", { className: "us-head" }, "Coming up"), ...L.upcoming.map(p => plainCard(p)));
     }
+    root.append(busyLinkCard());
 
     // Shared list
     const input = el("input", { id: "us-add", type: "text", maxlength: 200, placeholder: "Add to the shared list", "aria-label": "New shared task", enterkeyhint: "done" });

@@ -215,6 +215,13 @@ main { padding: 12px 16px 24px; }
 .past summary { font-weight: 600; cursor: pointer; }
 .past .plan-card { margin-top: 10px; box-shadow: none; background: var(--bg); }
 .invite .code { margin: 8px 0; font-size: 34px; font-weight: 700; letter-spacing: .18em; text-align: center; }
+/* Busy page (busy.html) and the busy-link card */
+.busy-day h2 { font-size: 17px; }
+.busy-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }
+.busy-row:first-of-type { border-top: 0; }
+.busy-when { font-weight: 600; }
+.busy-foot { margin-top: 20px; }
+.link-box { margin: 8px 0; padding: 10px 12px; border-radius: 10px; background: var(--bg); font-size: 13px; overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; }
 .tab-count {
   display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 999px;
   background: var(--danger); color: #fff; font-size: 11px; line-height: 18px; text-align: center;
