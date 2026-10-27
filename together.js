@@ -7,6 +7,7 @@
 const Together = (() => {
   const CACHE_KEY = "dailyapp.together";   // last shared data seen, so it still shows offline
   const OUTBOX_KEY = "dailyapp.outbox";    // plans suggested while offline, sent when back online
+  const GROUP_KEY = "dailyapp.group";      // the shared space this phone shows (per account)
   const ITEM_COLUMNS = "id,owner_id,group_id,kind,title,day,part,exact_time,done,done_by,status,version,last_by,details,created_at,updated_at";
 
   let client = null;
@@ -36,12 +37,15 @@ const Together = (() => {
     return { ...emptyData(), userId };
   }
 
+  // One outbox per account, so plans made offline never go out under someone else's name
+  const outboxKey = () => OUTBOX_KEY + "." + (user ? user.id : "none");
+
   function outbox() {
-    try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]"); } catch (_) { return []; }
+    try { return JSON.parse(localStorage.getItem(outboxKey()) || "[]"); } catch (_) { return []; }
   }
 
   function setOutbox(list) {
-    try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(list)); } catch (_) {}
+    try { localStorage.setItem(outboxKey(), JSON.stringify(list)); } catch (_) {}
   }
 
   // Database error codes from setup.sql, in plain words
@@ -65,7 +69,10 @@ const Together = (() => {
       await client.rpc("expire_plans");
       const { data: groups, error: e1 } = await client.from("groups").select("id,name,created_at").order("created_at");
       if (e1) throw e1;
-      const next = { ...emptyData(), userId: user.id, group: groups[0] || null };
+      // The space to show: the one you joined or started last on this phone, else the first one
+      let preferred = null;
+      try { preferred = localStorage.getItem(GROUP_KEY + "." + user.id); } catch (_) {}
+      const next = { ...emptyData(), userId: user.id, group: groups.find(g => g.id === preferred) || groups[0] || null };
       if (next.group) {
         const g = next.group.id;
         const [members, items] = await Promise.all([
@@ -149,9 +156,14 @@ const Together = (() => {
     return "";
   }
 
+  function rememberGroup(id) {
+    try { if (id) localStorage.setItem(GROUP_KEY + "." + user.id, id); } catch (_) {}
+  }
+
   async function createGroup() {
-    const { error } = await client.rpc("create_group", { p_name: "Together" });
+    const { data: groupId, error } = await client.rpc("create_group", { p_name: "Together" });
     if (error) return { error: explain(error) };
+    rememberGroup(groupId);
     await load();
     return makeInvite();
   }
@@ -163,8 +175,9 @@ const Together = (() => {
   }
 
   async function joinGroup(code) {
-    const { error } = await client.rpc("join_group", { p_code: code });
+    const { data: groupId, error } = await client.rpc("join_group", { p_code: code });
     if (error) return explain(error);
+    rememberGroup(groupId);
     await load();
     return "";
   }
@@ -173,14 +186,14 @@ const Together = (() => {
 
   async function write(promise) {
     const { error } = await promise;
-    if (error) { lastError = explain(error); emit(); return false; }
+    if (error) { lastError = explain(error); emit(); reloadSoon(0); return false; }   // reload undoes the early change on screen
     reloadSoon(0);
     return true;
   }
 
   function addTask(text, part) {
     text = text.trim().slice(0, 200);
-    if (!text || !data.group) return;
+    if (!text || !data.group) return Promise.resolve(false);
     return write(client.from("items").insert({ group_id: data.group.id, kind: "task", title: text, part: part || null }));
   }
 
@@ -236,12 +249,18 @@ const Together = (() => {
   async function flushOutbox() {
     const list = outbox();
     if (!list.length) return;
-    const left = [];
+    const left = [], refused = [];
     for (const plan of list) {
       const { error } = await client.rpc("suggest_plan", plan);
-      if (error && isNetworkError(error)) left.push(plan);   // a plan the server refused is dropped, not retried forever
+      if (!error) continue;
+      // No connection or a server hiccup (5xx): try again later. A clear "no" from the rules: drop it and say so.
+      if (isNetworkError(error) || error.status >= 500 || !error.message) left.push(plan);
+      else refused.push(plan.p_title + " (" + explain(error) + ")");
     }
-    setOutbox(left);
+    // Keep plans that were added to the outbox while this was sending
+    const sentIds = new Set(list.map(p => p.p_id));
+    setOutbox([...left, ...outbox().filter(p => !sentIds.has(p.p_id))]);
+    if (refused.length) { lastError = "A plan made offline couldn't be sent: " + refused.join("; "); emit(); }
     if (left.length < list.length) reloadSoon(0);
   }
 
@@ -289,6 +308,18 @@ const Together = (() => {
     return error ? explain(error) : "";
   }
 
+  // Signing out: this phone stops getting the account's notifications (removed from the account, then unsubscribed)
+  async function beforeSignOut() {
+    try {
+      if (!pushSupported() || !navigator.serviceWorker.controller) return;
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = reg && await reg.pushManager.getSubscription();
+      if (!sub) return;
+      await client.from("push_subscriptions").delete().eq("endpoint", sub.endpoint);
+      await sub.unsubscribe();
+    } catch (_) { /* signing out still works */ }
+  }
+
   // ---------- Lists for the screen ----------
 
   const today = () => dayKey();
@@ -330,12 +361,22 @@ const Together = (() => {
     try {
       const { data: publicKey, error } = await client.rpc("vapid_public_key");
       if (error || !publicKey) return "Notifications aren't set up on the server yet.";
-      const reg = await navigator.serviceWorker.ready;
+      // ready never settles if the offline helper didn't install: give up after 10 s instead of locking the tab
+      const reg = await Promise.race([navigator.serviceWorker.ready,
+        new Promise((_, no) => setTimeout(() => no(new Error("the app's offline helper isn't running; reopen the app")), 10000))]);
       let sub = await reg.pushManager.getSubscription();
       if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(publicKey) });
       const j = sub.toJSON();
-      const { error: e2 } = await client.from("push_subscriptions")
+      let { error: e2 } = await client.from("push_subscriptions")
         .upsert({ endpoint: j.endpoint, user_id: user.id, p256dh: j.keys.p256dh, auth: j.keys.auth });
+      if (e2) {
+        // This phone's sign-up still belongs to another account (signed out before this fix): make a fresh one
+        await sub.unsubscribe();
+        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(publicKey) });
+        const k = sub.toJSON();
+        ({ error: e2 } = await client.from("push_subscriptions")
+          .upsert({ endpoint: k.endpoint, user_id: user.id, p256dh: k.keys.p256dh, auth: k.keys.auth }));
+      }
       if (e2) return explain(e2);
       emit();
       return "";
@@ -352,6 +393,7 @@ const Together = (() => {
       client = Sync.getClient();
       user = u;
       if (channel && client) { client.removeChannel(channel); channel = null; }
+      tzSaved = false;
       data = u ? loadCache(u.id) : emptyData();
       emit();
       if (u) load();
@@ -370,7 +412,7 @@ const Together = (() => {
     addTask, toggleTask, renameTask, deleteTask,
     suggestPlan, answerPlan, setDetails, lists, waitingCount,
     pushState, enablePush,
-    getBusyLink, newBusyLink, turnOffBusyLink,
+    getBusyLink, newBusyLink, turnOffBusyLink, beforeSignOut,
   };
 })();
 

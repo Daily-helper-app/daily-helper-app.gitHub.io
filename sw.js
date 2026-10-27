@@ -60,6 +60,7 @@ async function networkFirst(req) {
   network.catch(() => {});
   const timeout = new Promise(resolve => setTimeout(resolve, 3000, null));
   const fast = await Promise.race([network.catch(() => null), timeout]);
-  if (fast) return fast;
-  return (await cache.match(req, { ignoreSearch: true })) || network;
+  if (fast && fast.ok) return fast;
+  // Slow, offline or a server error: the saved copy is better than an error page
+  return (await cache.match(req, { ignoreSearch: true })) || fast || network;
 }

@@ -82,7 +82,22 @@ const Sync = (() => {
   async function syncNow() {
     if (!client || !user) return;
     if (busy) { again = true; return; }
+    // The list on this phone couldn't be read: an empty list here must not delete everything in the account
+    if (typeof loadFailed !== "undefined" && loadFailed) {
+      setStatus("Sync is paused because this phone's list couldn't be read. Restore a backup, then sync again.");
+      return;
+    }
     busy = true;
+    if (meta.userId && meta.userId !== user.id) {
+      // A different account signed in on this phone: keep the previous person's list aside (not sent anywhere) and
+      // start from this account's own tasks, so the two lists never mix
+      try { localStorage.setItem("dailyapp.otherAccount." + Date.now(), JSON.stringify(state)); } catch (_) {}
+      state.todos = [];
+      applying = true;
+      save();
+      applying = false;
+      render();
+    }
     if (meta.userId !== user.id) meta = { userId: user.id, base: {}, lastSync: null };
     try {
       const { data: rows, error } = await client.from("items").select(COLUMNS).is("group_id", null).eq("kind", "task");
@@ -137,7 +152,8 @@ const Sync = (() => {
         applying = true;
         save();
         applying = false;
-        render();
+        // Not while a text box is open: closing it redraws anyway, and a redraw now would throw away what's typed
+        if (!document.querySelector(".edit, .add-inline")) render();
       }
       setStatus("Synced " + new Date(meta.lastSync).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + ".");
     } catch (e) {
@@ -211,7 +227,9 @@ const Sync = (() => {
   }
 
   async function signOut() {
-    if (!confirm("Sign out? Your tasks stay on this phone.")) return;
+    if (!confirm("Sign out? Your tasks stay on this phone. Notifications for this account stop on this phone.")) return;
+    // Stop this phone getting the account's notifications (they'd show plan names to whoever uses it next)
+    if (typeof Together !== "undefined") await Together.beforeSignOut();
     await client.auth.signOut();
   }
 

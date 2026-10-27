@@ -20,7 +20,8 @@
 
   function dayLabel(day) {
     const today = new Date();
-    const tomorrow = new Date(Date.now() + 86400000);
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);   // calendar day, safe on the night clocks change
     if (day === dayKey(today)) return "Today";
     if (day === dayKey(tomorrow)) return "Tomorrow";
     return new Date(day + "T12:00").toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });

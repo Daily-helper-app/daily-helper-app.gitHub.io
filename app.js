@@ -2,7 +2,7 @@
 // sync.js also keeps a copy in the account.
 "use strict";
 
-const APP_VERSION = "0.6.0";
+const APP_VERSION = "0.6.1";
 const SAVE_VERSION = 3;                         // bump + add a step in migrate() when the save shape changes
 const SAVE_KEY = "dailyapp.data";
 const SNAPSHOT_KEY = "dailyapp.snapshot";       // automatic start-of-day copy
@@ -203,7 +203,10 @@ function undo() {
   if (!step) return;
   if (step.state) state = migrate(JSON.parse(step.state));
   // Put tasks back where they were (in their original order, so each index is still right)
-  else for (const { task, index } of step.tasks) state.todos.splice(Math.min(index, state.todos.length), 0, task);
+  // (skipped when a sync already brought the task back, so it never shows twice)
+  else for (const { task, index } of step.tasks) {
+    if (!state.todos.some(t => t.id === task.id)) state.todos.splice(Math.min(index, state.todos.length), 0, task);
+  }
   save();
   render();
   toast("Undone", undoSteps.length > 0);
@@ -498,7 +501,8 @@ async function importBackup(file) {
     alert("That file is not a Daily backup (" + e.message + ").");
     return;
   }
-  if (!confirm(`Replace your ${state.todos.length} tasks with the ${data.todos.length} tasks in this backup?`)) return;
+  const inAccount = typeof Sync !== "undefined" && Sync.getUser() ? " (also in your account and on your other phones)" : "";
+  if (!confirm(`Replace your ${state.todos.length} tasks with the ${data.todos.length} tasks in this backup${inAccount}?`)) return;
   data.lastBackup = state.lastBackup;
   restore(data, "Backup restored");
 }
@@ -509,7 +513,8 @@ function restoreSnapshot() {
   if (!snap) return;
   let data;
   try { data = migrate(snap.data); } catch (e) { alert("The saved copy could not be read."); return; }
-  if (!confirm(`Go back to the copy with ${data.todos.length} tasks? Changes made since then are undone.`)) return;
+  const inAccount = typeof Sync !== "undefined" && Sync.getUser() ? " (also in your account and on your other phones)" : "";
+  if (!confirm(`Go back to the copy with ${data.todos.length} tasks? Changes made since then are undone${inAccount}.`)) return;
   restore(data, "Went back to the saved copy");
 }
 

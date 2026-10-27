@@ -8,6 +8,7 @@ const UsView = (() => {
   let message = "";        // a short note under the heading (e.g. an error from the last action)
   let invite = null;       // { code } after making an invite
   let draft = null;        // what was typed in the open plan form, kept when the screen redraws (e.g. after an error)
+  let liveForm = null;     // { id, get } of the form on screen, so any redraw keeps what's typed in it
   let busy = false;
   const expanded = new Set();   // plans opened to show their details and history
   let pastOpen = false;
@@ -31,7 +32,9 @@ const UsView = (() => {
   function dayLabel(day) {
     if (!day) return "";
     const t = dayKey();
-    const tomorrow = dayKey(Date.now() + 86400000);
+    const next = new Date();
+    next.setDate(next.getDate() + 1);   // calendar day, so the night clocks change doesn't break "Tomorrow"
+    const tomorrow = dayKey(next.getTime());
     if (day === t) return "Today";
     if (day === tomorrow) return "Tomorrow";
     return new Date(day + "T12:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
@@ -108,8 +111,10 @@ const UsView = (() => {
     const node = el("div", { className: "plan-fields" },
       title, day, el("div", { className: "move" }, partBtns),
       el("label", { className: "muted small" }, "Time (optional; with a time you both get a reminder when it starts) ", time), note, details);
-    return { node, get: () => ({ title: title && title.value, day: day.value, part, time: time.value, note: note ? note.value : undefined,
-      details: details ? details.value : undefined }) };
+    const get = () => ({ title: title && title.value, day: day.value, part, time: time.value, note: note ? note.value : undefined,
+      details: details ? details.value : undefined });
+    liveForm = { id: openForm, get };
+    return { node, get };
   }
 
   // The plan's name; tapping it opens or closes its details and history
@@ -128,6 +133,7 @@ const UsView = (() => {
     if (openForm === "details:" + p.id) {
       const area = el("textarea", { maxlength: 1000, rows: 4, "aria-label": "Details" });
       area.value = draft && draft.details !== undefined ? draft.details : (p.details || "");
+      liveForm = { id: openForm, get: () => ({ details: area.value }) };
       box.append(area, el("div", { className: "btn-row" },
         el("button", { type: "button", className: "btn primary", onclick: () => act(async () => {
           draft = { details: area.value };
@@ -331,7 +337,7 @@ const UsView = (() => {
       el("button", { type: "button", className: "btn", onclick: () => act(async () => {
         if (!confirm("Make a new link? The old one stops working, so anyone who has it needs the new one.")) return "";
         const r = await Together.newBusyLink();
-        if (r.token) busyLink = r.token;
+        busyLink = r.token || undefined;   // failed half way: load what the account really has
         return r.error || "";
       }) }, "Make a new link"),
       el("button", { type: "button", className: "text-btn left danger", onclick: () => act(async () => {
@@ -414,8 +420,13 @@ const UsView = (() => {
     root.append(el("h3", { className: "us-head" }, "Together list"),
       el("form", { className: "add", autocomplete: "off", onsubmit: e => {
         e.preventDefault();
-        Together.addTask(input.value, null);
+        const text = input.value;
         input.value = "";
+        // If it couldn't be saved (e.g. offline), put the text back so nothing typed is lost
+        Together.addTask(text, null).then(ok => {
+          const box = $("us-add");
+          if (!ok && box && !box.value) box.value = text;
+        });
       } }, input, el("button", { type: "submit", className: "add-btn", "aria-label": "Add shared task" }, "+")));
     const open = L.tasks.filter(t => !t.done), done = L.tasks.filter(t => t.done);
     if (L.tasks.length) root.append(el("ul", { className: "list" }, [...open, ...done].map(taskRowShared)));
@@ -441,6 +452,8 @@ const UsView = (() => {
     const typing = active && root.contains(active) && active.matches("input, textarea") && active.id !== "us-add";
     if (!force && (typing || openForm)) { pending = true; drawBadge(); return; }
     pending = false;
+    if (liveForm && liveForm.id === openForm && openForm) { try { draft = liveForm.get(); } catch (_) {} }
+    liveForm = null;
     // The shared list's add box survives redraws, so several tasks can be added in a row
     const addBox = $("us-add");
     const keepAdd = addBox && document.activeElement === addBox ? addBox.value : null;
@@ -474,6 +487,13 @@ const UsView = (() => {
 
   function init() {
     Together.onChange(() => draw());
+    // Another account signed in (or out): nothing from the previous person stays on the Us tab
+    if (typeof Sync !== "undefined") Sync.onUserChange(() => {
+      busyLink = undefined; busyLinkLoading = false; invite = null; message = "";
+      openForm = null; draft = null; liveForm = null; pastOpen = false;
+      expanded.clear(); historyOpen.clear();
+      draw(true);
+    });
     // Typing finished: catch up on anything that arrived meanwhile
     const root = $("us-root");
     root.addEventListener("focusout", () => setTimeout(() => {
