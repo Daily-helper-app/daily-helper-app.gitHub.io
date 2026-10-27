@@ -67,7 +67,9 @@ const Together = (() => {
     if (m.includes("not_in_space")) return "Someone you picked isn't in this space any more. Pick again.";
     if (m.includes("no_people")) return "Pick at least one person.";
     if (m.includes("not_owner")) return "Only the person who runs this space can do that.";
-    if (m.includes("not_member")) return "That person isn't in this space any more.";
+    // You were removed, or the plan isn't yours to see any more: show what's really there
+    if (m.includes("not_member")) { reloadSoon(0); return "You're not in this space any more."; }
+    if (m.includes("not_found")) { reloadSoon(0); return "That plan isn't there for you any more."; }
     if (!navigator.onLine) return "You're offline. Try again when you have signal.";
     return "Couldn't reach the account server. Try again in a moment.";
   }
@@ -188,6 +190,7 @@ const Together = (() => {
   async function removeMember(id) {
     const { error } = await client.rpc("remove_member", { p_group: data.group.id, p_user: id });
     await load();
+    if (error && (error.message || "").includes("not_member")) return "They're not in this space any more.";
     return error ? explain(error) : "";
   }
 

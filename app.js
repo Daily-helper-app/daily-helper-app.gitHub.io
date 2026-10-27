@@ -2,7 +2,7 @@
 // sync.js also keeps a copy in the account.
 "use strict";
 
-const APP_VERSION = "0.8.0";
+const APP_VERSION = "0.8.1";
 const SAVE_VERSION = 3;                         // bump + add a step in migrate() when the save shape changes
 const SAVE_KEY = "dailyapp.data";
 const SNAPSHOT_KEY = "dailyapp.snapshot";       // automatic start-of-day copy

@@ -571,7 +571,7 @@ const UsView = (() => {
 
     if (L.past.length) {
       const past = el("details", { className: "card past", open: pastOpen },
-        el("summary", {}, "Past plans · " + L.past.length),
+        el("summary", {}, "Past and not going · " + L.past.length),
         L.past.map(p => plainCard(p, pastWord(p))));
       past.addEventListener("toggle", () => { pastOpen = past.open; });
       root.append(past);
