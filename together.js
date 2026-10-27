@@ -96,6 +96,7 @@ const Together = (() => {
       online = true;
       lastError = "";
       saveCache();
+      saveTimeZone();
       subscribe();
       await flushOutbox();
     } catch (e) {
@@ -103,6 +104,16 @@ const Together = (() => {
       lastError = explain(e);
     }
     emit();
+  }
+
+  // The phone's time zone, so a reminder for "7:00 pm" comes at 7 pm where you are (once per app start)
+  let tzSaved = false;
+  async function saveTimeZone() {
+    if (tzSaved || !me()) return;
+    tzSaved = true;
+    let tz = "";
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) {}
+    if (tz) await client.from("profiles").update({ tz }).eq("id", user.id);
   }
 
   function reloadSoon(ms = 300) {

@@ -197,6 +197,14 @@ main { padding: 12px 16px 24px; }
 }
 .text-btn.left { margin: 4px 0 0; padding: 10px 0; color: var(--accent); }
 .history-head { margin-top: 10px; }
+.history-drop { margin-top: 10px; }
+.history-drop summary {
+  min-height: 44px; display: flex; align-items: center; gap: 6px; list-style: none;
+  color: var(--muted); font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.history-drop summary::-webkit-details-marker { display: none; }
+.history-drop summary::before { content: "\25B8"; font-size: 12px; transition: transform .15s; }
+.history-drop[open] summary::before { transform: rotate(90deg); }
 .plan-note { margin-top: 6px; font-size: 15px; font-style: italic; overflow-wrap: anywhere; }
 .plan-note .by { font-style: normal; }
 .notes { margin: 4px 0 0; padding-left: 18px; font-size: 15px; overflow-wrap: anywhere; }

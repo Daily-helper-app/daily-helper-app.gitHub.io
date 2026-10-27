@@ -11,6 +11,7 @@ const UsView = (() => {
   let busy = false;
   const expanded = new Set();   // plans opened to show their details and history
   let pastOpen = false;
+  const historyOpen = new Set();   // plans whose History drop-down is open
   let pending = false;     // live data arrived while a form was open: redraw once it closes
 
   // Small helper: el("div", { className: "x", onclick: f }, child, "text")
@@ -104,7 +105,7 @@ const UsView = (() => {
     if (details) details.value = d.details || "";
     const node = el("div", { className: "plan-fields" },
       title, day, el("div", { className: "move" }, partBtns),
-      el("label", { className: "muted small" }, "Time (optional) ", time), note, details);
+      el("label", { className: "muted small" }, "Time (optional; with a time you both get a reminder when it starts) ", time), note, details);
     return { node, get: () => ({ title: title && title.value, day: day.value, part, time: time.value, note: note ? note.value : undefined,
       details: details ? details.value : undefined }) };
   }
@@ -146,8 +147,14 @@ const UsView = (() => {
         el("ul", { className: "notes" }, notes.map(n => el("li", {},
           el("span", { className: "by" }, who(n.actor) + ": "), n.note))));
     }
+    // History stays folded (a drop-down) unless opened, so an opened plan isn't cluttered
     const list = historyList(p);
-    if (list) box.append(el("div", { className: "muted small history-head" }, "History"), list);
+    if (list) {
+      const drop = el("details", { className: "history-drop", open: historyOpen.has(p.id) },
+        el("summary", {}, "History (" + Together.events(p.id).length + ")"), list);
+      drop.addEventListener("toggle", () => { drop.open ? historyOpen.add(p.id) : historyOpen.delete(p.id); });
+      box.append(drop);
+    }
     return box;
   }
 
