@@ -2,7 +2,7 @@
 // Online: always loads the newest files (so updates arrive by themselves) and refreshes the copy.
 // Offline or very slow signal (over 3 s): uses the saved copy.
 const CACHE = "daily-app";
-const FILES = ["./", "index.html", "app.css", "app.js", "sync.js", "together.js", "together-view.js", "config.js",
+const FILES = ["./", "index.html", "app.css", "app.js", "sync.js", "together.js", "together-view.js", "schedule.js", "config.js",
   "vendor/supabase-2.117.3.js",
   "manifest.webmanifest",
   "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png"];

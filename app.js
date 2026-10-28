@@ -2,7 +2,7 @@
 // sync.js also keeps a copy in the account.
 "use strict";
 
-const APP_VERSION = "0.8.2";
+const APP_VERSION = "0.9.0";
 const SAVE_VERSION = 3;                         // bump + add a step in migrate() when the save shape changes
 const SAVE_KEY = "dailyapp.data";
 const SNAPSHOT_KEY = "dailyapp.snapshot";       // automatic start-of-day copy
@@ -372,7 +372,7 @@ function renderSettings() {
 function showView(name) {
   for (const view of document.querySelectorAll(".view")) view.hidden = view.id !== "view-" + name;
   for (const tab of document.querySelectorAll(".tab")) tab.classList.toggle("active", tab.dataset.view === name);
-  $("title").textContent = { todo: "To-do", us: "Us", settings: "Settings" }[name];
+  $("title").textContent = { todo: "To-do", us: "Us", schedule: "Schedule", settings: "Settings" }[name];
   window.scrollTo(0, 0);
 }
 

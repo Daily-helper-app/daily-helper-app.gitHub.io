@@ -220,6 +220,7 @@ details.people-box summary { font-weight: 600; cursor: pointer; }
 .people { margin: 10px 0 4px; padding: 0; list-style: none; }
 .person { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; border-top: 1px solid var(--line); }
 .person .text-btn { margin: 0; padding: 10px 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 #join-box { margin-top: 12px; }
 #join-box summary { list-style: none; cursor: pointer; }
 #join-box summary::-webkit-details-marker { display: none; }
@@ -270,3 +271,40 @@ details.people-box summary { font-weight: 600; cursor: pointer; }
   box-shadow: 0 4px 16px rgba(0, 0, 0, .2);
 }
 .toast button { min-height: 44px; padding: 8px 14px; border: 0; background: none; color: #a9a9ff; font-weight: 700; }
+
+/* Schedule tab (schedule.js): month strip + agenda, inspired by Outlook */
+.sched-head { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
+.sched-head b { flex: 1; text-align: center; font-size: 18px; }
+.navbtn { min-width: 44px; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--text); font-size: 18px; }
+.navbtn.today-btn { font-size: 14px; font-weight: 600; color: var(--accent); }
+.sched-people .space-chip { min-height: 40px; padding: 8px 14px; font-size: 14px; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.sched-month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin: 10px 0 4px; }
+.sched-month .wd { text-align: center; color: var(--muted); font-size: 12px; padding-bottom: 2px; }
+.sched-month .day { min-height: 46px; padding: 4px 0 3px; border: 1px solid transparent; border-radius: 10px; background: var(--card); color: var(--text);
+  display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 14px; }
+.sched-month .day.other { color: var(--done); background: transparent; }
+.sched-month .day.today .num { color: var(--accent); font-weight: 800; }
+.sched-month .day.sel { border-color: var(--accent); }
+.sched-month .day.free-all { background: rgba(47, 158, 110, .28); }
+.sched-month .day.free-some { background: rgba(47, 158, 110, .11); }
+.sched-month .dots { display: flex; gap: 2px; height: 7px; align-items: center; }
+.sched-month .dots i { width: 6px; height: 6px; border-radius: 50%; display: block; }
+.sched-month .dots em { font-size: 9px; font-style: normal; color: var(--muted); }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; }
+.sw.free-all { background: rgba(47, 158, 110, .45); }
+.sw.free-some { background: rgba(47, 158, 110, .18); }
+.sched-agenda .ag-day { margin: 14px 0 4px; font-size: 15px; }
+.sched-agenda .ag-day span { color: var(--muted); font-weight: 400; }
+.sched-agenda .ag-free { color: #2f9e6e; }
+.ag { display: flex; align-items: stretch; gap: 10px; width: 100%; min-height: 44px; padding: 6px 0; border: 0; border-top: 1px solid var(--line);
+  background: none; color: var(--text); text-align: left; font-size: 15px; }
+.ag .bar { flex: none; width: 4px; border-radius: 2px; }
+.ag .bar.tent { background: repeating-linear-gradient(45deg, var(--muted) 0 3px, transparent 3px 6px); }
+.ag .when { flex: none; width: 92px; color: var(--muted); font-size: 13px; padding-top: 1px; }
+.ag .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ag .what small { display: block; color: var(--muted); font-size: 13px; }
+.sched-agenda .free { margin: 2px 0 6px; color: var(--muted); font-size: 13px; font-style: italic; }
+.sched-foot { margin-top: 18px; }
+.privacy { margin-top: 10px; }
+.privacy .move { padding: 6px 0 0; }

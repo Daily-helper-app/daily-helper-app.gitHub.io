@@ -20,6 +20,7 @@ const UsView = (() => {
   let addingSpace = false; // the "+" chip is open: start or join another space
   let inviteOpen = false;  // the "Invite someone" drop-down is open
   let peopleOpen = false;  // the "People in …" drop-down is open
+  const privacyDraft = {}; // plan id → "some" while its people are being picked (saved once someone is picked)
 
   // Small helper: el("div", { className: "x", onclick: f }, child, "text")
   function el(tag, props = {}, ...children) {
@@ -29,7 +30,8 @@ const UsView = (() => {
       else if (k === "className") node.className = v;
       else if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v === true ? "" : v);
     }
-    for (const c of children.flat()) if (c !== null && c !== undefined && c !== false) node.append(c);
+    // flat(Infinity): lists inside lists (the invite card has two levels) were shown as "[object …]" text before
+    for (const c of children.flat(Infinity)) if (c !== null && c !== undefined && c !== false) node.append(c);
     return node;
   }
 
@@ -69,6 +71,7 @@ const UsView = (() => {
   async function act(fn) {
     if (busy) return;
     busy = true;
+    Together.clearError();
     try {
       const result = await fn();
       message = typeof result === "string" ? result : "";
@@ -107,17 +110,18 @@ const UsView = (() => {
       });
       return b;
     });
-    const pick = others.length > 1
+    // Shown with 3+ people, or when someone was unticked before the space shrank (so the choice stays visible)
+    const pick = others.length > 1 || (d.picked && others.length === 1)
       ? el("div", {}, el("div", { className: "muted small" }, "Who's in it? (only they see what it is)"),
           el("div", { className: "move" }, pickBtns))
       : null;
     const day = el("input", { type: "date", value: d.day || startDay || dayKey(), min: dayKey(), "aria-label": "Day" });
     let part = d.part || currentPart();
     const partBtns = Object.entries(PART_LABELS).map(([id, label]) => {
-      const b = el("button", { type: "button", className: id === part ? "on" : "" }, label);
+      const b = el("button", { type: "button", className: id === part ? "on" : "", "aria-pressed": id === part ? "true" : "false" }, label);
       b.addEventListener("click", () => {
         part = id;
-        for (const x of partBtns) x.className = x === b ? "on" : "";
+        for (const x of partBtns) { x.className = x === b ? "on" : ""; x.setAttribute("aria-pressed", x === b ? "true" : "false"); }
       });
       return b;
     });
@@ -132,10 +136,14 @@ const UsView = (() => {
     const node = el("div", { className: "plan-fields" },
       title, pick, day, el("div", { className: "move" }, partBtns),
       el("label", { className: "muted small" }, "Time (optional; with a time, everyone going gets a reminder when it starts) ", time), note, details);
-    // people = who is ticked, or null when it's everyone (then people who join later are in it too)
-    const get = () => ({ title: title && title.value, day: day.value, part, time: time.value, note: note ? note.value : undefined,
-      details: details ? details.value : undefined, picked: [...picked],
-      people: others.length > 1 && picked.size < others.length ? [...picked] : null });
+    // people = who is ticked among the people here now, or null when it's everyone (then people who join later
+    // are added to it too, family-3.sql). A tick for someone who left no longer counts (bug fixed 2026-10-28).
+    const get = () => {
+      const ticked = others.filter(m => picked.has(m.id)).map(m => m.id);
+      const everyone = ticked.length === others.length && !(d.picked && others.length <= 1 && !ticked.length);
+      return { title: title && title.value, day: day.value, part, time: time.value, note: note ? note.value : undefined,
+        details: details ? details.value : undefined, picked: [...picked], people: everyone ? null : ticked };
+    };
     liveForm = { id: openForm, get };
     return { node, get };
   }
@@ -182,6 +190,8 @@ const UsView = (() => {
         el("button", { type: "button", className: "text-btn left", onclick: () => { openForm = "details:" + p.id; draft = null; draw(true); } },
           p.details ? "Edit details" : "Add details"));
     }
+    const priv = privacyBox(p);
+    if (priv) box.append(priv);
     // Every note on this plan, oldest first
     const notes = notesOf(p.id);
     if (notes.length) {
@@ -201,8 +211,46 @@ const UsView = (() => {
   }
 
   // A plan that is on already (someone said Going) keeps its time: then the choice is Going or Can't
+  // Like Venmo's privacy setting: who may see that you're busy for this plan (people in it see the plan anyway).
+  // Shown on plans you're in that haven't happened yet.
+  function privacyBox(p) {
+    const mine = Together.answerOf(p);
+    if (!Together.privacyReady()) return null;   // the server doesn't have it yet (family-4.sql not run)
+    if (!(mine === "going" || mine === "waiting") || !["suggested", "approved"].includes(p.status) || p.day < dayKey()) return null;
+    const saved = Together.privacyOf(p.id);
+    const mode = privacyDraft[p.id] || saved.mode;
+    const inPlan = new Set(Together.peopleIn(p.id).map(x => x.id));
+    const candidates = Together.everyone().filter(x => x.id !== Together.myId() && !inPlan.has(x.id));
+    const choice = (value, label) => el("button", { type: "button", className: mode === value ? "on" : "",
+      "aria-pressed": mode === value ? "true" : "false", onclick: () => {
+        if (value === "some") { privacyDraft[p.id] = "some"; draw(true); return; }
+        delete privacyDraft[p.id];
+        act(() => Together.setBusyPrivacy(p.id, value));
+      } }, label);
+    const box = el("div", { className: "privacy" },
+      el("div", { className: "muted small history-head" }, "Who sees you're busy then (people not in this plan)"),
+      el("div", { className: "move" }, choice("all", "Everyone"), candidates.length ? choice("some", "Some people") : null,
+        choice("none", "Nobody else")));
+    if (mode === "some") {
+      const viewers = new Set(saved.mode === "some" ? saved.viewers : []);
+      box.append(el("div", { className: "move" }, candidates.map(x => el("button", { type: "button",
+        className: viewers.has(x.id) ? "on" : "", "aria-pressed": viewers.has(x.id) ? "true" : "false", onclick: () => {
+          viewers.has(x.id) ? viewers.delete(x.id) : viewers.add(x.id);
+          if (!viewers.size) return act(async () => "Pick at least one person, or choose Nobody else.");
+          delete privacyDraft[p.id];
+          act(() => Together.setBusyPrivacy(p.id, "some", [...viewers]));
+        } }, x.name || "Someone"))));
+      if (!viewers.size) box.append(el("p", { className: "muted small" }, "Tap who may see it, e.g. your partner."));
+    }
+    box.append(el("p", { className: "muted small" }, {
+      all: "Everyone you share a space with sees a busy block (no name), and so does your busy link.",
+      some: "Only the people you pick see a busy block. Your busy link doesn't show it.",
+      none: "Nobody outside this plan sees that you're busy, not even your busy link." }[mode]));
+    return box;
+  }
+
   function waitingCard(p) {
-    const card = el("div", { className: "plan-card" },
+    const card = el("div", { className: "plan-card", "data-plan": p.id },
       planHead(p),
       el("div", { className: "muted" }, whenText(p)),
       el("div", { className: "muted small" }, "From " + Together.nameOf(p.last_by) + (p.status === "approved" ? " · it's on" : "")),
@@ -224,7 +272,7 @@ const UsView = (() => {
         el("button", { type: "button", className: "btn primary", onclick: () => act(() => Together.answerPlan(p.id, "approved")) }, "Going"),
         open ? el("button", { type: "button", className: "btn", onclick: () => { openForm = p.id; draft = null; draw(true); } }, "Other time") : null,
         el("button", { type: "button", className: "btn", onclick: () => act(() => {
-          const note = prompt("Can't make it? Add a short reason if you like (optional):", "");
+          const note = prompt("Can't make it? Add a short reason if you like (optional; everyone in this plan sees it):", "");
           if (note === null) return "";
           return Together.answerPlan(p.id, "declined", { note });
         }) }, "Can't")));
@@ -236,7 +284,7 @@ const UsView = (() => {
 
   function sentCard(p) {
     const waitingFor = Together.peopleIn(p.id).filter(x => x.answer === "waiting").map(x => x.name || "Someone");
-    return el("div", { className: "plan-card quiet" },
+    return el("div", { className: "plan-card quiet", "data-plan": p.id },
       planHead(p),
       el("div", { className: "muted" }, whenText(p)),
       peopleLine(p) || el("div", { className: "muted small" }, "Waiting for " + (waitingFor.length ? waitingFor.join(", ") : "answers")),
@@ -250,7 +298,7 @@ const UsView = (() => {
 
   // Approved and past plans: name, when, who's going, and (opened) details + history
   function plainCard(p, extra) {
-    return el("div", { className: "plan-card quiet" },
+    return el("div", { className: "plan-card quiet", "data-plan": p.id },
       planHead(p),
       el("div", { className: "muted small" }, whenText(p) + (extra ? " · " + extra : "")),
       peopleLine(p),
@@ -268,10 +316,10 @@ const UsView = (() => {
     const evs = Together.events(p.id);
     if (!evs.length) return null;
     const words = { suggested: "suggested", countered: "suggested another time", approved: "said Going",
-      declined: "said Can't", expired: "expired (no answer)", details: "changed the details" };
+      declined: "said Can't", expired: "expired (no answer)", details: "changed the details", left: "left the space" };
     const takenBack = e => e.action === "declined" && e.note === "taken back";
     return el("ul", { className: "history" }, evs.map(e => el("li", {},
-      (e.actor ? (e.actor === Together.myId() ? "You" : Together.nameOf(e.actor)) + " " : "") +
+      (e.actor ? (e.actor === Together.myId() ? "You" : Together.nameOf(e.actor)) + " " : e.action === "left" ? "Someone " : "") +
       (takenBack(e) ? "took it back" : words[e.action]) +
       (e.action === "suggested" || e.action === "countered" ? " " + whenText(e) : "") +
       (e.note && !takenBack(e) ? ' · "' + e.note + '"' : "") +
@@ -343,7 +391,8 @@ const UsView = (() => {
     const current = Together.group();
     const chips = Together.groups().map(g => {
       const n = Together.waitingCount(g.id);
-      return el("button", { type: "button", className: "space-chip" + (!addingSpace && current && g.id === current.id ? " on" : ""),
+      const on = !addingSpace && current && g.id === current.id;
+      return el("button", { type: "button", className: "space-chip" + (on ? " on" : ""), "aria-pressed": on ? "true" : "false",
         onclick: () => { addingSpace = false; invite = null; openForm = null; draft = null; act(() => Together.switchGroup(g.id)); } },
         g.name, n ? el("span", { className: "chip-count" }, String(n)) : null);
     });
@@ -359,7 +408,8 @@ const UsView = (() => {
       invite
         ? [el("p", { className: "code" }, invite.code),
            el("p", { className: "muted" }, "Works once, for 24 hours. With an account: Us → \"I have a code\". " +
-             "New to Daily: Settings → \"New here? Join with a code\".")]
+             "New to Daily: Settings → \"New here? Join with a code\"."),
+           el("button", { type: "button", className: "btn primary", onclick: () => act(() => shareCode(invite.code, space)) }, "Share code")]
         : el("p", { className: "muted" }, "Make a code and give it to them in person or by text."),
       el("button", { type: "button", className: "btn", onclick: () => act(async () => {
         const r = await Together.makeInvite();
@@ -424,6 +474,22 @@ const UsView = (() => {
     return box;
   }
 
+  // The code plus the steps, so someone new to the app knows what to open and where to type it
+  async function shareCode(code, space) {
+    const appUrl = location.origin + location.pathname.replace(/[^/]*$/, "");
+    const text = "Join " + space + " on Daily: open " + appUrl + " on your phone (Safari: Share → Add to Home Screen), " +
+      "then Settings → \"New here? Join with a code\" (or Us → \"I have a code\" if you have an account) and type " +
+      code + ". The code works once, for 24 hours.";
+    try {
+      if (navigator.share) { await navigator.share({ text }); return ""; }
+      await navigator.clipboard.writeText(text);
+      return "Copied: paste it into a text.";
+    } catch (e) {
+      if (e && e.name === "AbortError") return "";
+      try { await navigator.clipboard.writeText(text); return "Copied: paste it into a text."; } catch (_) { return "Send the code above by text."; }
+    }
+  }
+
   // Your busy link: one link for family (a sister, a mother-in-law) that shows when you have plans, in every shared
   // space you're in. They see busy times only, never what the plans are.
   function busyLinkUrl(token) {
@@ -483,10 +549,22 @@ const UsView = (() => {
     return card;
   }
 
-  // Shown until notifications are on for this phone
+  // Shown until notifications are on for this phone, or until "Hide" (remembered on this phone)
+  const PUSH_HIDE_KEY = "dailyapp.pushCardHidden";
   function pushCard() {
     const state = Together.pushState();
-    if (state === "granted") return null;
+    let hidden = false;
+    try { hidden = localStorage.getItem(PUSH_HIDE_KEY) === "1"; } catch (_) {}
+    if (state === "granted" || hidden) return null;
+    const card = pushCardFor(state);
+    card.append(el("button", { type: "button", className: "text-btn left", onclick: () => {
+      try { localStorage.setItem(PUSH_HIDE_KEY, "1"); } catch (_) {}
+      draw(true);
+    } }, "Hide"));
+    return card;
+  }
+
+  function pushCardFor(state) {
     const installed = window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
     if (state === "unsupported" || !installed) {
       return el("div", { className: "card" },
@@ -582,14 +660,14 @@ const UsView = (() => {
 
   // ---------- Drawing ----------
 
-  // force = the person tapped something here. Live updates (force false) wait while a form is open or someone is
-  // typing, so nothing they typed disappears; the badge still updates.
+  // force = the person tapped something here. Live updates (force false) wait while someone is typing, so the
+  // keyboard doesn't close; an open form is redrawn with what was typed in it (draft). The badge always updates.
   function draw(force = false) {
     const root = $("us-root");
     if (!root) return;
     const active = document.activeElement;
     const typing = active && root.contains(active) && active.matches("input, textarea") && active.id !== "us-add";
-    if (!force && (typing || openForm)) { pending = true; drawBadge(); return; }
+    if (!force && typing) { pending = true; drawBadge(); return; }
     pending = false;
     if (liveForm && liveForm.id === openForm && openForm) { try { draft = liveForm.get(); } catch (_) {} }
     liveForm = null;
@@ -599,6 +677,7 @@ const UsView = (() => {
     root.replaceChildren();
     const status = !Together.signedIn() ? "" : (Together.error() || (Together.online() ? "" : "Showing the last saved copy."));
     if (message || status) root.append(el("p", { className: "us-msg" }, message || status));
+    announce(message || status);
 
     if (!Together.signedIn()) {
       root.append(el("div", { className: "card" },
@@ -613,6 +692,18 @@ const UsView = (() => {
     const newAdd = $("us-add");
     if (keepAdd !== null && newAdd) { newAdd.value = keepAdd; newAdd.focus(); }
     drawBadge();
+  }
+
+  // A screen reader reads out each new message (the region stays put; the page around it is redrawn)
+  let lastAnnounced = "";
+  function announce(text) {
+    let live = $("us-live");
+    if (!live) {
+      live = el("div", { id: "us-live", className: "sr-only", role: "status", "aria-live": "polite" });
+      document.body.append(live);
+    }
+    if (text && text !== lastAnnounced) live.textContent = text;
+    lastAnnounced = text;
   }
 
   function drawBadge() {
@@ -647,7 +738,19 @@ const UsView = (() => {
     draw(true);
   }
 
-  return { init, draw };
+  // From the Schedule tab: show that plan on Us, in its own space, opened
+  async function openPlan(itemId, groupId) {
+    showView("us");
+    addingSpace = false; openForm = null; draft = null;
+    expanded.add(itemId);
+    if (groupId && (!Together.group() || Together.group().id !== groupId)) await Together.switchGroup(groupId);
+    if (Together.lists().past.some(p => p.id === itemId)) pastOpen = true;
+    draw(true);
+    const card = document.querySelector('[data-plan="' + itemId + '"]');
+    if (card) card.scrollIntoView({ block: "center" });
+  }
+
+  return { init, draw, openPlan };
 })();
 
 UsView.init();

@@ -100,7 +100,16 @@ const Sync = (() => {
     }
     if (meta.userId !== user.id) meta = { userId: user.id, base: {}, lastSync: null };
     try {
-      const { data: rows, error } = await client.from("items").select(COLUMNS).is("group_id", null).eq("kind", "task");
+      // Read 1,000 at a time: a reply the server cut off would make missing tasks look deleted on another phone
+      const rows = [];
+      let error = null;
+      for (let from = 0; ; from += 1000) {
+        const r = await client.from("items").select(COLUMNS).is("group_id", null).eq("kind", "task")
+          .order("id").range(from, from + 999);
+        if (r.error) { error = r.error; break; }
+        rows.push(...r.data);
+        if (r.data.length < 1000) break;
+      }
       if (error) throw error;
       const sent = new Map(state.todos.map(t => [t.id, contentKey(t)]));   // the list as it was when sync began
       const p = plan(state.todos, rows, meta.base);
@@ -193,8 +202,8 @@ const Sync = (() => {
     else if (!user) setStatus("Not signed in. Your tasks are only on this phone.");
     if (user) $("account-email").textContent = user.email || "";
     $("privacy-text").textContent = user
-      ? "Your tasks are on this phone and in your account (on Supabase's servers), where only you can read them. " +
-        "No tracking, no ads."
+      ? "Your tasks are on this phone and in your account (on Supabase's servers). In the app only you can read them; " +
+        "whoever runs the account server could see all data. No tracking, no ads."
       : "Your tasks are stored only on this phone. Nothing is sent anywhere until you sign in. No tracking, no ads.";
   }
 

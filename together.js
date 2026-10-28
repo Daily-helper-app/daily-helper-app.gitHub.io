@@ -18,12 +18,15 @@ const Together = (() => {
   let data = emptyData();
   let online = false;      // the last load reached the server
   let lastError = "";
+  let notice = "";         // stays until the person taps something (a reload doesn't clear it)
   const listeners = [];
 
   // groups = every space you're in; waitingBy = plans waiting for you, per space (so no space's plans are missed);
-  // people = who is in each plan and their answer ("waiting", "going", "cant")
+  // people = who is in each plan and their answer ("waiting", "going", "cant"); privacy = your own "who sees
+  // you're busy" per plan (family-4.sql); everyone = you + everyone you share any space with
   function emptyData() {
-    return { userId: null, groups: [], waitingBy: {}, group: null, members: [], items: [], events: {}, people: {} };
+    return { userId: null, groups: [], waitingBy: {}, group: null, members: [], items: [], events: {}, people: {},
+      privacy: {}, everyone: [] };
   }
 
   function emit() { for (const fn of listeners) fn(); }
@@ -51,12 +54,15 @@ const Together = (() => {
     try { localStorage.setItem(outboxKey(), JSON.stringify(list)); } catch (_) {}
   }
 
-  // Database error codes from setup.sql, in plain words
-  function explain(error) {
+  // Database error codes from setup.sql and family-*.sql, in plain words. quiet = called from load(), which must
+  // not start another load (that could repeat without a pause).
+  function explain(error, quiet = false) {
     const m = (error && error.message) || "";
+    if (m) console.warn("Daily: the account server said:", m);   // for debugging; never holds passwords
     if (m.includes("plan_changed")) return "This plan changed while you were looking. Look again.";
-    if (m.includes("plan_closed")) return "This plan was already answered.";
-    if (m.includes("own_suggestion")) return "You suggested this one, so the other person answers it.";
+    if (m.includes("plan_closed")) return "This plan is closed already.";
+    if (m.includes("own_suggestion")) return "You suggested this one, so the others answer it.";
+    if (m.includes("not_signed_in")) return "You're signed out. Sign in again in Settings.";
     if (m.includes("day_passed")) return "That day has passed. Pick a later day.";
     if (m.includes("bad_code")) return "That code doesn't work. Codes work once, for 24 hours.";
     if (m.includes("already_member")) return "You're in that space already.";
@@ -68,10 +74,22 @@ const Together = (() => {
     if (m.includes("no_people")) return "Pick at least one person.";
     if (m.includes("not_owner")) return "Only the person who runs this space can do that.";
     // You were removed, or the plan isn't yours to see any more: show what's really there
-    if (m.includes("not_member")) { reloadSoon(0); return "You're not in this space any more."; }
-    if (m.includes("not_found")) { reloadSoon(0); return "That plan isn't there for you any more."; }
+    if (m.includes("not_member")) { if (!quiet) reloadSoon(0); return "You're not in this space any more."; }
+    if (m.includes("not_found")) { if (!quiet) reloadSoon(0); return "That plan isn't there for you any more."; }
     if (!navigator.onLine) return "You're offline. Try again when you have signal.";
+    if (m && !isNetworkError(error)) return "Something went wrong on the account server (" + m.slice(0, 60) + "). Try again.";
     return "Couldn't reach the account server. Try again in a moment.";
+  }
+
+  // Reads every row, 1,000 at a time: the server sends at most 1,000 per request and doesn't say it cut the rest
+  async function selectAll(makeQuery) {
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data: page, error } = await makeQuery().range(from, from + 999);
+      if (error) return { data: null, error };
+      rows.push(...page);
+      if (page.length < 1000) return { data: rows, error: null };
+    }
   }
 
   // ---------- Loading ----------
@@ -100,7 +118,7 @@ const Together = (() => {
         const g = next.group.id;
         const [members, items] = await Promise.all([
           client.from("group_members").select("user_id,joined_at,invited_by,owner_seen").eq("group_id", g).order("joined_at"),
-          client.from("items").select(ITEM_COLUMNS).eq("group_id", g).order("created_at"),
+          selectAll(() => client.from("items").select(ITEM_COLUMNS).eq("group_id", g).order("created_at").order("id")),
         ]);
         if (members.error) throw members.error;
         if (items.error) throw items.error;
@@ -116,15 +134,22 @@ const Together = (() => {
         const planIds = items.data.filter(i => i.kind === "plan").map(i => i.id);
         if (planIds.length) {
           const [events, people] = await Promise.all([
-            client.from("plan_events").select("item_id,actor,action,day,part,exact_time,note,plan_version,created_at")
-              .in("item_id", planIds).order("created_at"),
-            client.from("plan_people").select("item_id,user_id,answer").in("item_id", planIds),
+            selectAll(() => client.from("plan_events").select("item_id,actor,action,day,part,exact_time,note,plan_version,created_at")
+              .in("item_id", planIds).order("created_at").order("id")),
+            selectAll(() => client.from("plan_people").select("item_id,user_id,answer").in("item_id", planIds)
+              .order("item_id").order("user_id")),
           ]);
           if (events.error) throw events.error;
           if (people.error) throw people.error;
           for (const ev of events.data) (next.events[ev.item_id] = next.events[ev.item_id] || []).push(ev);
           for (const pp of people.data) (next.people[pp.item_id] = next.people[pp.item_id] || []).push(pp);
+          // Your busy privacy (only your own rows come back). An older server without it: every plan stays "everyone".
+          const privacy = await client.from("plan_busy_privacy").select("item_id,mode,viewers").in("item_id", planIds);
+          next.privacyReady = !privacy.error;
+          if (!privacy.error) for (const r of privacy.data) next.privacy[r.item_id] = r;
         }
+        const { data: all } = await client.from("profiles").select("id,display_name");
+        next.everyone = (all || []).map(p => ({ id: p.id, name: p.display_name || "" }));
       } else {
         // Your own name is still needed for the first screen
         const { data: me } = await client.from("profiles").select("id,display_name").eq("id", user.id);
@@ -139,7 +164,7 @@ const Together = (() => {
       await flushOutbox();
     } catch (e) {
       online = false;
-      lastError = explain(e);
+      lastError = explain(e, true);
     }
     emit();
   }
@@ -167,6 +192,8 @@ const Together = (() => {
     channel = client.channel("together-" + g)
       .on("postgres_changes", { event: "*", schema: "public", table: "items", filter: "group_id=eq." + g }, () => reloadSoon())
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "plan_events" }, () => reloadSoon())
+      // A delete can't be filtered by space, so any deleted item (only its id is sent) reloads this space
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "items" }, () => reloadSoon())
       .subscribe();
     channel.groupId = g;
   }
@@ -235,8 +262,9 @@ const Together = (() => {
     const { data: groupId, error } = await client.rpc("create_group", { p_name: name });
     if (error) return { error: explain(error) };
     rememberGroup(groupId);
+    const { data: code, error: e2 } = await client.rpc("make_invite", { p_group: groupId });
     await load();
-    return makeInvite();
+    return e2 ? { error: explain(e2) } : { code };
   }
 
   async function makeInvite() {
@@ -336,7 +364,7 @@ const Together = (() => {
     // Keep plans that were added to the outbox while this was sending
     const sentIds = new Set(list.map(p => p.p_id));
     setOutbox([...left, ...outbox().filter(p => !sentIds.has(p.p_id))]);
-    if (refused.length) { lastError = "A plan made offline couldn't be sent: " + refused.join("; "); emit(); }
+    if (refused.length) { notice = "A plan made offline couldn't be sent: " + refused.join("; "); emit(); }
     if (left.length < list.length) reloadSoon(0);
   }
 
@@ -350,6 +378,14 @@ const Together = (() => {
       p_day: extra.day || null, p_part: extra.part || null, p_time: extra.time || null,
       p_note: (extra.note || "").trim().slice(0, 200) || null,
     });
+    await load();
+    return error ? explain(error) : "";
+  }
+
+  // Who sees that you're busy for this plan (people not in it): "all", "some" (viewers) or "none"
+  const privacyOf = id => data.privacy[id] || { mode: "all", viewers: [] };
+  async function setBusyPrivacy(id, mode, viewers = []) {
+    const { error } = await client.rpc("set_busy_privacy", { p_item: id, p_mode: mode, p_viewers: viewers });
     await load();
     return error ? explain(error) : "";
   }
@@ -497,10 +533,12 @@ const Together = (() => {
 
   return {
     init, load, onChange: fn => listeners.push(fn),
-    signedIn: () => !!user, online: () => online, error: () => lastError, clearError: () => { lastError = ""; },
+    signedIn: () => !!user, online: () => online, error: () => lastError || notice,
+    clearError: () => { lastError = ""; notice = ""; },
     group: () => data.group, groups: () => data.groups || [], members: () => data.members, me, myName, nameOf,
     others, owner, isOwner, myId: () => user && user.id,
-    events: id => data.events[id] || [], peopleIn, answerOf,
+    events: id => data.events[id] || [], peopleIn, answerOf, privacyOf, setBusyPrivacy,
+    everyone: () => data.everyone || [], privacyReady: () => !!data.privacyReady,
     setName, createGroup, makeInvite, joinGroup, switchGroup, removeMember, ackMember, leaveGroup,
     addTask, toggleTask, renameTask, deleteTask,
     suggestPlan, answerPlan, setDetails, lists, waitingCount,
