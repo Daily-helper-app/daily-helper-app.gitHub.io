@@ -72,6 +72,7 @@ const Together = (() => {
     if (m.includes("plan_on")) return "Someone is going already, so the time stays. Answer Going or Can't.";
     if (m.includes("not_in_space")) return "Someone you picked isn't in this space any more. Pick again.";
     if (m.includes("no_people")) return "Pick at least one person.";
+    if (m.includes("too_many")) return "That's the daily limit for one person. Try again tomorrow.";
     if (m.includes("not_owner")) return "Only the person who runs this space can do that.";
     // You were removed, or the plan isn't yours to see any more: show what's really there
     if (m.includes("not_member")) { if (!quiet) reloadSoon(0); return "You're not in this space any more."; }
