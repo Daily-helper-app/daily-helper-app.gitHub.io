@@ -278,18 +278,20 @@ const UsView = (() => {
       " · " + new Date(e.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))));
   }
 
+  // A tap here is the person's own action, so it redraws at once (draw(true)) even while a form is open; a plain
+  // live-update redraw would wait for the form, and the tick looked like it did nothing (bug fixed 2026-10-28)
   function taskRowShared(t) {
     const li = el("li", { className: "item" + (t.done ? " done" : "") });
     const check = el("button", { type: "button", className: "check", "aria-label": t.done ? "Mark not done" : "Mark done",
-      onclick: () => Together.toggleTask(t.id) });
+      onclick: () => { Together.toggleTask(t.id); draw(true); } });
     check.innerHTML = "<span>" + CHECK_SVG + "</span>";   // fixed icon only, never task text
     const text = el("span", { className: "text", onclick: () => {
       const v = prompt("Change task:", t.title);
-      if (v !== null) Together.renameTask(t.id, v);
+      if (v !== null) { Together.renameTask(t.id, v); draw(true); }
     } }, t.title);
     if (t.done && t.done_by) text.append(el("span", { className: "by" }, " · " + (t.done_by === Together.myId() ? "you" : Together.nameOf(t.done_by))));
     const del = el("button", { type: "button", className: "del", "aria-label": "Delete task",
-      onclick: () => { if (confirm("Delete this shared task for everyone in this space?")) Together.deleteTask(t.id); } }, "×");
+      onclick: () => { if (confirm("Delete this shared task for everyone in this space?")) { Together.deleteTask(t.id); draw(true); } } }, "×");
     li.append(check, text, del);
     return li;
   }

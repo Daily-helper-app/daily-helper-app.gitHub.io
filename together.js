@@ -278,7 +278,10 @@ const Together = (() => {
 
   function renameTask(id, text) {
     text = text.trim().slice(0, 200);
-    if (!text) return;
+    const t = data.items.find(i => i.id === id);
+    if (!text || !t) return;
+    t.title = text;   // shows at once; the reload brings back the saved one
+    emit();
     return write(client.from("items").update({ title: text }).eq("id", id));
   }
 
